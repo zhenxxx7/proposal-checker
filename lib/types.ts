@@ -81,6 +81,18 @@ export interface Crop {
   b: number;
 }
 
+/** A resolved, CSS-ready fill. Theme colors and modifiers are baked in at parse time. */
+export type Fill =
+  | { type: "solid"; color: string }
+  | { type: "gradient"; css: string };
+
+export interface Line {
+  color: string;
+  /** width in EMU */
+  width: number;
+  dash: boolean;
+}
+
 export interface PicShape {
   kind: "pic";
   id: string;
@@ -94,10 +106,17 @@ export interface PicShape {
   crop: Crop;
 }
 
+export type Align = "left" | "center" | "right" | "justify";
+export type Anchor = "top" | "center" | "bottom";
+
 export interface Para {
   text: string;
   /** run font sizes in points */
   sizes: number[];
+  /** first run's colour, CSS string */
+  color?: string;
+  align?: Align;
+  bold?: boolean;
 }
 
 export interface TextShape {
@@ -105,8 +124,12 @@ export interface TextShape {
   id: string;
   name: string;
   rect: Rect;
+  rot: number;
   paragraphs: Para[];
   placeholder?: string;
+  fill?: Fill;
+  line?: Line;
+  anchor?: Anchor;
 }
 
 export type Shape = PicShape | TextShape;
@@ -114,6 +137,7 @@ export type Shape = PicShape | TextShape;
 export interface Slide {
   index: number;
   shapes: Shape[];
+  background?: Fill;
 }
 
 export type ImageFormat = "png" | "jpg" | "gif" | "webp" | "svg" | "unknown";

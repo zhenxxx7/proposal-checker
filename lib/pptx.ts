@@ -1,6 +1,7 @@
 import { unzipSync, strFromU8 } from "fflate";
 import { readImageHeader } from "./imageHeader";
-import type { Crop, Deck, MediaInfo, Para, PicShape, Rect, Shape, Slide, TextShape } from "./types";
+import { parseScheme, resolveBackground, resolveColor, resolveFill, resolveLine, type Scheme } from "./color";
+import type { Align, Anchor, Crop, Deck, MediaInfo, Para, PicShape, Rect, Shape, Slide, TextShape } from "./types";
 
 const NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -19,6 +20,7 @@ export function parsePptx(buf: ArrayBuffer): Deck {
   const wanted = (name: string) =>
     name === "ppt/presentation.xml" ||
     name === "ppt/_rels/presentation.xml.rels" ||
+    name === "ppt/theme/theme1.xml" ||
     name.startsWith("ppt/media/") ||
     /^ppt\/slides\/slide\d+\.xml$/.test(name) ||
     /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/.test(name);
@@ -51,6 +53,8 @@ export function parsePptx(buf: ArrayBuffer): Deck {
   const widthEmu = num(sldSz?.getAttribute("cx"), 9144000);
   const heightEmu = num(sldSz?.getAttribute("cy"), 6858000);
 
+  const scheme = parseScheme(files["ppt/theme/theme1.xml"] ? xml("ppt/theme/theme1.xml") : null);
+
   const presRels = relMap(xml("ppt/_rels/presentation.xml.rels"), "ppt/");
   const sldIds = Array.from(pres.getElementsByTagNameNS(NS_P, "sldId"));
   const slidePaths = sldIds
@@ -63,8 +67,8 @@ export function parsePptx(buf: ArrayBuffer): Deck {
     const rels = files[relsPath] ? relMap(xml(relsPath), "ppt/slides/") : new Map<string, string>();
     const tree = doc.getElementsByTagNameNS(NS_P, "spTree")[0];
     const shapes: Shape[] = [];
-    if (tree) walk(tree, IDENTITY, rels, shapes, `s${i + 1}`);
-    return { index: i + 1, shapes };
+    if (tree) walk(tree, IDENTITY, rels, shapes, `s${i + 1}`, scheme);
+    return { index: i + 1, shapes, background: resolveBackground(doc, scheme) };
   });
 
   return { widthEmu, heightEmu, slides, media, blobs };
@@ -78,6 +82,7 @@ function walk(
   rels: Map<string, string>,
   out: Shape[],
   idPrefix: string,
+  scheme: Scheme,
 ) {
   let n = 0;
   for (const child of elementChildren(parent)) {
@@ -86,7 +91,7 @@ function walk(
     switch (child.localName) {
       case "grpSp": {
         const g = groupTransform(child, tf);
-        walk(child, g, rels, out, id);
+        walk(child, g, rels, out, id, scheme);
         break;
       }
       case "pic": {
@@ -97,7 +102,7 @@ function walk(
       case "sp":
       case "graphicFrame":
       case "cxnSp": {
-        const t = readText(child, tf, id);
+        const t = readText(child, tf, id, scheme);
         if (t) out.push(t);
         break;
       }
@@ -158,11 +163,17 @@ function readPic(el: Element, tf: Transform, rels: Map<string, string>, id: stri
   };
 }
 
-function readText(el: Element, tf: Transform, id: string): TextShape | null {
+const ALIGN: Record<string, Align> = { l: "left", ctr: "center", r: "right", just: "justify" };
+const ANCHOR: Record<string, Anchor> = { t: "top", ctr: "center", b: "bottom" };
+
+function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextShape | null {
   const paras: Para[] = [];
   for (const p of Array.from(el.getElementsByTagNameNS(NS_A, "p"))) {
     let text = "";
     const sizes: number[] = [];
+    let color: string | undefined;
+    let bold: boolean | undefined;
+
     for (const node of elementChildren(p)) {
       if (node.namespaceURI !== NS_A) continue;
       if (node.localName === "br") {
@@ -170,25 +181,44 @@ function readText(el: Element, tf: Transform, id: string): TextShape | null {
       } else if (node.localName === "r" || node.localName === "fld") {
         const t = firstNS(node, NS_A, "t");
         if (t?.textContent) text += t.textContent;
-        const sz = firstNS(node, NS_A, "rPr")?.getAttribute("sz");
+        const rPr = firstNS(node, NS_A, "rPr");
+        const sz = rPr?.getAttribute("sz");
         if (sz) sizes.push(num(sz, 0) / 100);
+        // First coloured run sets the paragraph colour — good enough for a preview.
+        if (color === undefined) {
+          const fill = rPr ? childNS(rPr, NS_A, "solidFill") : null;
+          const c = resolveColor(fill, scheme);
+          if (c) color = c;
+        }
+        if (bold === undefined && rPr?.getAttribute("b") === "1") bold = true;
       }
     }
-    if (text.trim()) paras.push({ text, sizes });
+    if (text.trim()) {
+      const pPr = firstNS(p, NS_A, "pPr");
+      const align = pPr ? ALIGN[pPr.getAttribute("algn") ?? ""] : undefined;
+      paras.push({ text, sizes, color, align, bold });
+    }
   }
   if (!paras.length) return null;
 
   const rect = rectOf(el, tf) ?? { x: 0, y: 0, w: 0, h: 0 };
   const cNvPr = firstNS(el, NS_P, "cNvPr");
   const ph = firstNS(el, NS_P, "ph");
+  const spPr = firstNS(el, NS_P, "spPr");
+  const bodyPr = firstNS(el, NS_A, "bodyPr");
+  const xfrm = spPr ? childNS(spPr, NS_A, "xfrm") : null;
 
   return {
     kind: "text",
     id,
     name: cNvPr?.getAttribute("name") ?? "",
     rect,
+    rot: num(xfrm?.getAttribute("rot"), 0) / 60000,
     paragraphs: paras,
     placeholder: ph?.getAttribute("type") ?? (ph ? "body" : undefined),
+    fill: resolveFill(spPr, scheme),
+    line: resolveLine(spPr, scheme),
+    anchor: bodyPr ? ANCHOR[bodyPr.getAttribute("anchor") ?? ""] : undefined,
   };
 }
 
@@ -225,6 +255,12 @@ function extOf(xfrm: Element, tag: "ext" | "chExt" = "ext") {
 /** First descendant with this namespace + local name (document order). */
 function firstNS(root: Element, ns: string, local: string): Element | null {
   return root.getElementsByTagNameNS(ns, local)[0] ?? null;
+}
+
+/** First *direct child* with this namespace + local name — avoids matching nested copies. */
+function childNS(root: Element, ns: string, local: string): Element | null {
+  for (const c of elementChildren(root)) if (c.namespaceURI === ns && c.localName === local) return c;
+  return null;
 }
 
 /** `.children` is not universal across DOM implementations; walk childNodes. */
