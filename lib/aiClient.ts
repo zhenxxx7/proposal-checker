@@ -10,11 +10,12 @@ const JPEG_QUALITY = 0.9;
 let seq = 0;
 const toFinding = (f: AiFinding, source: "ai-text" | "ai-image", shapeIds?: string[]): Finding => ({
   id: `a${++seq}`,
+  code: source === "ai-image" ? "ai.image" : "ai.text",
   slide: f.slide,
   severity: f.severity,
   category: f.category,
   source,
-  title: f.detail.split(/[.\n]/)[0].slice(0, 90) || "Issue found",
+  title: f.quote ? `“${f.quote.slice(0, 60)}”` : f.detail.split(/[.\n]/)[0].slice(0, 90) || "Issue found",
   detail: f.detail,
   quote: f.quote,
   suggestion: f.suggestion,

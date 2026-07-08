@@ -19,8 +19,38 @@ export type Category =
 
 export type Source = "rule" | "ai-text" | "ai-image";
 
+/** Stable identifier for the rule that fired. Findings are grouped by this. */
+export type Code =
+  | "text.repeated-word"
+  | "text.placeholder"
+  | "text.double-space"
+  | "text.space-before-punct"
+  | "text.missing-space"
+  | "text.doubled-punct"
+  | "text.lowercase-sentence"
+  | "text.unbalanced"
+  | "term.case-drift"
+  | "term.case-styling"
+  | "term.spelling-variant"
+  | "style.mixed-quotes"
+  | "style.title-size"
+  | "img.upscaled"
+  | "img.low-dpi"
+  | "img.distorted"
+  | "img.oversized"
+  | "img.sibling-size"
+  | "img.sibling-align"
+  | "img.same-nudged"
+  | "img.hero-width"
+  | "geo.text-overflow"
+  | "geo.pic-offslide"
+  | "geo.parked"
+  | "ai.text"
+  | "ai.image";
+
 export interface Finding {
   id: string;
+  code: Code;
   /** 1-based slide number as seen in PowerPoint */
   slide: number;
   severity: Severity;

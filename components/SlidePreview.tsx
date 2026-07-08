@@ -6,25 +6,31 @@ interface Props {
   deck: Deck;
   slide: Slide;
   urls: Map<string, string>;
-  highlight: Set<string>;
-  onPick?: (shapeId: string) => void;
+  highlight?: Set<string>;
+  /** thumb drops icon-sized pictures so a 120-logo wall stays cheap to render */
+  variant?: "full" | "thumb";
 }
 
 /**
  * Approximate reconstruction of the slide from the OOXML geometry — enough to
  * point at the offending shape. Not a renderer: no fills, effects, or fonts.
  */
-export function SlidePreview({ deck, slide, urls, highlight, onPick }: Props) {
+export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }: Props) {
   const { widthEmu: W, heightEmu: H } = deck;
+  const thumb = variant === "thumb";
   const pct = (v: number, total: number) => `${(v / total) * 100}%`;
+
+  const shapes = thumb
+    ? slide.shapes.filter((s) => (s.rect.w * s.rect.h) / (W * H) >= 0.005)
+    : slide.shapes;
 
   return (
     <div
-      className="relative w-full overflow-hidden rounded-lg border border-neutral-300 bg-white shadow-sm dark:border-neutral-700"
+      className="relative h-full w-full overflow-hidden bg-white"
       style={{ aspectRatio: `${W} / ${H}`, containerType: "inline-size" }}
     >
-      {slide.shapes.map((sh) => {
-        const on = highlight.has(sh.id);
+      {shapes.map((sh) => {
+        const on = !thumb && highlight?.has(sh.id);
         const box = {
           left: pct(sh.rect.x, W),
           top: pct(sh.rect.y, H),
@@ -39,7 +45,6 @@ export function SlidePreview({ deck, slide, urls, highlight, onPick }: Props) {
           return (
             <div
               key={sh.id}
-              onClick={() => onPick?.(sh.id)}
               className={`absolute overflow-hidden ${on ? "z-20 outline outline-[3px] outline-rose-500" : ""}`}
               style={box}
               title={sh.descr || sh.name}
@@ -49,6 +54,8 @@ export function SlidePreview({ deck, slide, urls, highlight, onPick }: Props) {
                 <img
                   src={url}
                   alt=""
+                  loading="lazy"
+                  decoding="async"
                   className="absolute max-w-none"
                   style={{
                     width: `${100 / fw}%`,
@@ -67,7 +74,6 @@ export function SlidePreview({ deck, slide, urls, highlight, onPick }: Props) {
         return (
           <div
             key={sh.id}
-            onClick={() => onPick?.(sh.id)}
             className={`absolute overflow-hidden leading-tight text-neutral-900 ${
               on ? "z-20 bg-rose-500/10 outline outline-[3px] outline-rose-500" : ""
             }`}

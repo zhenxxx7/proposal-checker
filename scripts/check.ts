@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { DOMParser } from "@xmldom/xmldom";
 import { parsePptx } from "../lib/pptx";
 import { runRuleChecks } from "../lib/checks";
+import { groupFindings, readiness } from "../lib/groups";
 import { tally, toMarkdown } from "../lib/report";
 
 // parsePptx targets the browser DOM; give Node an equivalent before it runs.
@@ -43,9 +44,16 @@ for (const file of files) {
   );
   console.log(`  ${c.error} blocking · ${c.warn} review · ${c.info} minor`);
 
-  const byCat = new Map<string, number>();
-  for (const f of findings) byCat.set(f.category, (byCat.get(f.category) ?? 0) + 1);
-  console.log("  by category:", Object.fromEntries([...byCat].sort((a, b) => b[1] - a[1])));
+  const STATE = { blocked: "⚠ Not ready to send", almost: "◑ Almost ready", ready: "✓ Ready to send" };
+  console.log(`  ${STATE[readiness(findings)]}`);
+
+  console.log("\n  what to fix, grouped");
+  const icon = { error: "🔴", warn: "🟡", info: "🔵" } as const;
+  for (const g of groupFindings(findings)) {
+    const where = g.slides.length > 6 ? `${g.slides.length} slides` : `slide ${g.slides.join(", ")}`;
+    console.log(`   ${icon[g.severity]} ${g.title}  (${where})`);
+    if (g.why) console.log(`      ${g.why}`);
+  }
 
   if (args.includes("--debug")) {
     const byTitle = new Map<string, number>();

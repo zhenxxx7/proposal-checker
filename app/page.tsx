@@ -1,38 +1,46 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Dropzone } from "@/components/Dropzone";
 import { FindingCard } from "@/components/FindingCard";
 import { SlidePreview } from "@/components/SlidePreview";
+import { SlideRail, countBySlide } from "@/components/SlideRail";
+import { Summary } from "@/components/Summary";
 import { analyzeImages, analyzeText, selectImageJobs } from "@/lib/aiClient";
 import { runRuleChecks } from "@/lib/checks";
+import { groupFindings } from "@/lib/groups";
 import { parsePptx } from "@/lib/pptx";
-import { bySeverity, download, tally, toMarkdown } from "@/lib/report";
-import type { Deck, Finding, Severity, Source } from "@/lib/types";
+import { bySeverity, download, toMarkdown } from "@/lib/report";
+import type { Deck, Finding } from "@/lib/types";
 
 type Phase = "idle" | "parsing" | "ready" | "ai";
-
-const SEVERITIES: Severity[] = ["error", "warn", "info"];
-const SOURCES: Source[] = ["rule", "ai-text", "ai-image"];
-const SOURCE_LABEL: Record<Source, string> = { rule: "Rules", "ai-text": "AI text", "ai-image": "AI images" };
-const SEV_LABEL: Record<Severity, string> = { error: "Blocking", warn: "Review", info: "Minor" };
+type View = "summary" | "slides";
 
 export default function Page() {
   const [phase, setPhase] = useState<Phase>("idle");
+  const [view, setView] = useState<View>("summary");
   const [fileName, setFileName] = useState("");
   const [deck, setDeck] = useState<Deck | null>(null);
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [findings, setFindings] = useState<Finding[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ done: 0, total: 0, label: "" });
+  const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [aiDone, setAiDone] = useState(false);
 
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
-  const [sevOn, setSevOn] = useState<Set<Severity>>(new Set(SEVERITIES));
-  const [srcOn, setSrcOn] = useState<Set<Source>>(new Set(SOURCES));
-  const [onlyThisSlide, setOnlyThisSlide] = useState(false);
+  const [query, setQuery] = useState("");
 
   // Revokes the *previous* map when `urls` is replaced, and everything on unmount.
   useEffect(() => () => urls.forEach((u) => URL.revokeObjectURL(u)), [urls]);
+
+  useEffect(() => {
+    fetch("/api/status")
+      .then((r) => r.json())
+      .then((j: { hasKey: boolean }) => setHasKey(j.hasKey))
+      .catch(() => setHasKey(false));
+  }, []);
 
   const load = useCallback(async (file: File) => {
     setPhase("parsing");
@@ -40,6 +48,9 @@ export default function Page() {
     setFindings([]);
     setDeck(null);
     setUrls(new Map());
+    setAiDone(false);
+    setActive(null);
+    setQuery("");
     setFileName(file.name);
     // Let the "parsing" frame paint before we block the thread on unzip.
     await new Promise((r) => setTimeout(r, 30));
@@ -52,6 +63,7 @@ export default function Page() {
       setDeck(parsed);
       setFindings(runRuleChecks(parsed));
       setSlide(1);
+      setView("summary");
       setPhase("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not read that file.");
@@ -68,15 +80,17 @@ export default function Page() {
     setFindings((f) => f.filter((x) => x.source === "rule"));
 
     try {
-      setProgress({ done: 0, total: imageJobs.length + 1, label: "Proofreading slide text…" });
+      const total = imageJobs.length + 1;
+      setProgress({ done: 0, total, label: "Proofreading slide text…" });
       const text = await analyzeText(deck);
       setFindings((f) => [...f, ...text]);
-      setProgress({ done: 1, total: imageJobs.length + 1, label: "Reading text inside images…" });
+      setProgress({ done: 1, total, label: `Reading ${imageJobs.length} images…` });
 
-      const images = await analyzeImages(imageJobs, (done, total) =>
-        setProgress({ done: done + 1, total: total + 1, label: `Reading images ${done}/${total}…` }),
+      const images = await analyzeImages(imageJobs, (done, n) =>
+        setProgress({ done: done + 1, total, label: `Reading images ${done}/${n}…` }),
       );
       setFindings((f) => [...f, ...images]);
+      setAiDone(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "AI check failed.");
     } finally {
@@ -85,62 +99,109 @@ export default function Page() {
     }
   }, [deck, imageJobs]);
 
-  const visible = useMemo(
-    () =>
-      findings
-        .filter((f) => sevOn.has(f.severity) && srcOn.has(f.source))
-        .filter((f) => !onlyThisSlide || f.slide === slide || f.relatedSlides?.includes(slide))
-        .sort((a, b) => a.slide - b.slide || bySeverity(a, b)),
-    [findings, sevOn, srcOn, onlyThisSlide, slide],
+  const matches = useCallback(
+    (f: Finding) => {
+      if (!query.trim()) return true;
+      const q = query.toLowerCase();
+      return (
+        f.title.toLowerCase().includes(q) ||
+        f.detail.toLowerCase().includes(q) ||
+        (f.quote?.toLowerCase().includes(q) ?? false)
+      );
+    },
+    [query],
   );
 
-  const perSlide = useMemo(() => {
-    const m = new Map<number, { error: number; warn: number; info: number }>();
-    for (const f of findings) {
-      const e = m.get(f.slide) ?? m.set(f.slide, { error: 0, warn: 0, info: 0 }).get(f.slide)!;
-      e[f.severity]++;
-    }
-    return m;
-  }, [findings]);
+  const filtered = useMemo(() => findings.filter(matches), [findings, matches]);
+  const groups = useMemo(() => groupFindings(filtered), [filtered]);
+  const perSlide = useMemo(() => countBySlide(findings), [findings]);
 
-  const counts = tally(findings);
+  const slideFindings = useMemo(
+    () =>
+      filtered
+        .filter((f) => f.slide === slide || f.relatedSlides?.includes(slide))
+        .sort(bySeverity),
+    [filtered, slide],
+  );
+
+  const openFinding = useCallback((f: Finding) => {
+    setSlide(f.slide);
+    setActive(f.id);
+    setView("slides");
+  }, []);
+
+  // ←/→ to walk slides while in the slide view.
+  useEffect(() => {
+    if (view !== "slides" || !deck) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.key === "ArrowLeft") setSlide((n) => Math.max(1, n - 1));
+      if (e.key === "ArrowRight") setSlide((n) => Math.min(deck.slides.length, n + 1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view, deck]);
+
   const current = deck?.slides.find((s) => s.index === slide);
   const highlight = new Set(findings.find((f) => f.id === active)?.shapeIds ?? []);
 
+  // w-full: `mx-auto` on a column flex child would otherwise shrink main to content width.
   return (
-    <main className="mx-auto flex min-h-screen max-w-[1600px] flex-col gap-4 p-4 md:p-6">
+    <main className="mx-auto flex w-full max-w-[1600px] flex-1 flex-col gap-5 p-4 md:p-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Proposal Checker</h1>
-          <p className="text-sm text-neutral-500">
-            Typos, image resolution, and inconsistent sizing — including text inside mockups.
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold tracking-tight">Proposal Checker</h1>
+          <p className="truncate text-xs text-neutral-500">
+            {deck ? `${fileName} · ${deck.slides.length} slides` : "Typos, blurry images, and inconsistent sizing"}
           </p>
         </div>
+
         {deck && (
           <div className="flex flex-wrap items-center gap-2">
-            <Pill tone="error">{counts.error} blocking</Pill>
-            <Pill tone="warn">{counts.warn} review</Pill>
-            <Pill tone="info">{counts.info} minor</Pill>
+            <div className="flex rounded-md border border-neutral-300 p-0.5 dark:border-neutral-700">
+              {(["summary", "slides"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={`rounded px-3 py-1 text-xs font-medium capitalize transition ${
+                    view === v
+                      ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+                      : "text-neutral-500 hover:text-neutral-900 dark:hover:text-white"
+                  }`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search findings…"
+              className="w-44 rounded-md border border-neutral-300 bg-transparent px-2.5 py-1.5 text-xs outline-none placeholder:text-neutral-400 focus:border-neutral-900 dark:border-neutral-700 dark:focus:border-white"
+            />
+
             <button
               onClick={() =>
                 download(`${fileName}.check.md`, toMarkdown(fileName, deck.slides.length, findings), "text/markdown")
               }
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
             >
               Export report
             </button>
-            <button
+
+            <AiButton
+              phase={phase}
+              hasKey={hasKey}
+              aiDone={aiDone}
+              images={imageJobs.length}
+              label={progress.label}
               onClick={runAi}
-              disabled={phase === "ai"}
-              className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-            >
-              {phase === "ai" ? progress.label || "Running…" : `Deep check with AI (${imageJobs.length} images)`}
-            </button>
+            />
           </div>
         )}
       </header>
 
-      {!deck && <Dropzone phase={phase} onFile={load} />}
       {error && (
         <p className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
           {error}
@@ -156,74 +217,41 @@ export default function Page() {
         </div>
       )}
 
-      {deck && current && (
-        <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[9rem_1fr_26rem]">
-          <nav className="flex max-h-[80vh] flex-row gap-1 overflow-auto lg:flex-col">
-            {deck.slides.map((s) => {
-              const c = perSlide.get(s.index);
-              return (
-                <button
-                  key={s.index}
-                  onClick={() => setSlide(s.index)}
-                  className={`flex shrink-0 items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm ${
-                    s.index === slide
-                      ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
-                      : "hover:bg-neutral-100 dark:hover:bg-neutral-900"
-                  }`}
-                >
-                  <span>Slide {s.index}</span>
-                  <span className="flex gap-1 text-[10px]">
-                    {!!c?.error && <Dot className="bg-rose-500">{c.error}</Dot>}
-                    {!!c?.warn && <Dot className="bg-amber-500">{c.warn}</Dot>}
-                    {!!c?.info && <Dot className="bg-sky-500">{c.info}</Dot>}
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
+      {!deck && <Dropzone busy={phase === "parsing"} onFile={load} />}
+
+      {deck && view === "summary" && (
+        <Summary all={findings} groups={groups} slideCount={deck.slides.length} query={query} onOpen={openFinding} />
+      )}
+
+      {deck && view === "slides" && current && (
+        <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[9.5rem_1fr_24rem]">
+          <SlideRail deck={deck} urls={urls} counts={perSlide} current={slide} onPick={setSlide} />
 
           <section className="min-w-0">
-            <SlidePreview
-              deck={deck}
-              slide={current}
-              urls={urls}
-              highlight={highlight}
-              onPick={() => setActive(null)}
-            />
+            <div className="overflow-hidden rounded-lg border border-neutral-300 shadow-sm dark:border-neutral-700">
+              <SlidePreview deck={deck} slide={current} urls={urls} highlight={highlight} />
+            </div>
             <p className="mt-2 text-xs text-neutral-500">
-              Approximate reconstruction from the slide geometry — click a finding to highlight the shape it refers to.
+              Slide {slide} of {deck.slides.length} · use ← → to move · approximate reconstruction, click a finding to
+              highlight its shape
             </p>
           </section>
 
-          <aside className="flex max-h-[80vh] flex-col overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
-            <div className="flex flex-wrap gap-1.5 border-b border-neutral-200 p-2 dark:border-neutral-800">
-              {SEVERITIES.map((s) => (
-                <Toggle key={s} on={sevOn.has(s)} onClick={() => setSevOn(toggle(sevOn, s))}>
-                  {SEV_LABEL[s]}
-                </Toggle>
-              ))}
-              {SOURCES.map((s) => (
-                <Toggle key={s} on={srcOn.has(s)} onClick={() => setSrcOn(toggle(srcOn, s))}>
-                  {SOURCE_LABEL[s]}
-                </Toggle>
-              ))}
-              <Toggle on={onlyThisSlide} onClick={() => setOnlyThisSlide((v) => !v)}>
-                This slide only
-              </Toggle>
+          <aside className="flex max-h-[calc(100vh-11rem)] flex-col overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
+            <div className="border-b border-neutral-200 px-3.5 py-2.5 text-xs font-medium dark:border-neutral-800">
+              {slideFindings.length} finding{slideFindings.length === 1 ? "" : "s"} on this slide
             </div>
-            <div className="flex-1 divide-y divide-neutral-200 overflow-auto dark:divide-neutral-800">
-              {visible.length === 0 && (
-                <p className="p-6 text-center text-sm text-neutral-500">Nothing matches these filters.</p>
+            <div className="flex-1 divide-y divide-neutral-100 overflow-y-auto dark:divide-neutral-900">
+              {slideFindings.length === 0 && (
+                <p className="p-8 text-center text-sm text-neutral-500">This slide is clean.</p>
               )}
-              {visible.map((f) => (
+              {slideFindings.map((f) => (
                 <FindingCard
                   key={f.id}
                   f={f}
                   active={f.id === active}
-                  onClick={() => {
-                    setActive(f.id);
-                    setSlide(f.slide);
-                  }}
+                  showSlide={false}
+                  onClick={() => setActive(f.id === active ? null : f.id)}
                 />
               ))}
             </div>
@@ -234,82 +262,39 @@ export default function Page() {
   );
 }
 
-function Dropzone({ phase, onFile }: { phase: Phase; onFile: (f: File) => void }) {
-  const [over, setOver] = useState(false);
-  const busy = phase === "parsing";
+function AiButton({
+  phase,
+  hasKey,
+  aiDone,
+  images,
+  label,
+  onClick,
+}: {
+  phase: Phase;
+  hasKey: boolean | null;
+  aiDone: boolean;
+  images: number;
+  label: string;
+  onClick: () => void;
+}) {
+  if (hasKey === false) {
+    return (
+      <span
+        title="Add ANTHROPIC_API_KEY to .env.local and restart the server"
+        className="cursor-not-allowed rounded-md border border-dashed border-neutral-300 px-3 py-1.5 text-xs text-neutral-400 dark:border-neutral-700"
+      >
+        AI check needs an API key
+      </span>
+    );
+  }
 
   return (
-    <label
-      onDragOver={(e) => {
-        e.preventDefault();
-        setOver(true);
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setOver(false);
-        const f = e.dataTransfer.files[0];
-        if (f) onFile(f);
-      }}
-      className={`flex min-h-[50vh] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-10 text-center transition ${
-        over
-          ? "border-neutral-900 bg-neutral-50 dark:border-white dark:bg-neutral-900"
-          : "border-neutral-300 dark:border-neutral-700"
-      }`}
+    <button
+      onClick={onClick}
+      disabled={phase === "ai" || hasKey === null}
+      className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
     >
-      <input
-        type="file"
-        accept=".pptx"
-        className="hidden"
-        disabled={busy}
-        onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
-      />
-      <p className="text-lg font-medium">{busy ? "Reading deck…" : "Drop a .pptx proposal here"}</p>
-      <p className="max-w-md text-sm text-neutral-500">
-        {busy
-          ? "Unzipping slides and measuring every image."
-          : "The file is parsed in your browser — nothing leaves the machine until you run the AI deep check, and then only downscaled images."}
-      </p>
-    </label>
+      {phase === "ai" ? label || "Running…" : aiDone ? `Re-run AI check (${images} images)` : `Deep check with AI (${images} images)`}
+    </button>
   );
 }
-
-function toggle<T>(set: Set<T>, v: T) {
-  const next = new Set(set);
-  if (next.has(v)) next.delete(v);
-  else next.add(v);
-  return next;
-}
-
-const Toggle = ({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) => (
-  <button
-    onClick={onClick}
-    className={`rounded-full px-2.5 py-1 text-xs transition ${
-      on
-        ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
-        : "bg-neutral-100 text-neutral-500 dark:bg-neutral-900"
-    }`}
-  >
-    {children}
-  </button>
-);
-
-const Pill = ({ tone, children }: { tone: Severity; children: React.ReactNode }) => (
-  <span
-    className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-      tone === "error"
-        ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200"
-        : tone === "warn"
-          ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200"
-          : "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200"
-    }`}
-  >
-    {children}
-  </span>
-);
-
-const Dot = ({ className, children }: { className: string; children: React.ReactNode }) => (
-  <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-white ${className}`}>
-    {children}
-  </span>
-);

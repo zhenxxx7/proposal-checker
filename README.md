@@ -77,6 +77,23 @@ single finding that lists the slides.
 
 ---
 
+## The interface
+
+**Summary** is the landing view. A verdict banner (*Not ready to send* / *Almost ready* /
+*Ready to send*), three counters, then findings **grouped by what you'd actually do about
+them** — "6 images will look blurry (slide 79, 82, 83, 85, 86)" rather than six separate
+rows. Blocking groups start expanded. Click any finding to jump to its slide.
+
+**Slides** is the drill-down. A lazy-rendered thumbnail rail (only ~7 of 93 previews mount
+at a time), the reconstructed slide, and the findings on it. Clicking a finding outlines
+the exact shape. `←` / `→` walk the deck.
+
+Search filters the list; it never changes the verdict or the counters. Every fix
+suggestion has a one-click **copy**. The AI button disables itself with a reason when no
+API key is configured, instead of failing on click.
+
+---
+
 ## Usage
 
 ```bash
@@ -99,6 +116,21 @@ npm run check -- "proposal.pptx"
 npm run check -- "proposal.pptx" --md report.md
 npm run check -- "a.pptx" "b.pptx" --debug     # --debug prints every finding
 ```
+
+It prints the verdict and the grouped fix list, the same shape as the Summary view.
+
+### UI verification
+
+Drives the real interface in a real Chrome against a real deck — upload, grouping,
+navigation, search, highlighting, console errors. Needs the dev server running.
+
+```bash
+npm run dev
+npm run verify:ui -- "proposal.pptx"
+```
+
+Uses `puppeteer-core` against an already-installed Chrome or Edge; it does not download
+a browser. Writes `scripts/__summary.png`, `__slides.png`, `__search.png` (gitignored).
 
 ---
 

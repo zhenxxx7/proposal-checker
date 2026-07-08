@@ -1,4 +1,15 @@
-import { EMU_PER_INCH, inches, type Deck, type Finding, type PicShape, type Rect, type Severity, type Shape, type TextShape } from "./types";
+import {
+  EMU_PER_INCH,
+  inches,
+  type Code,
+  type Deck,
+  type Finding,
+  type PicShape,
+  type Rect,
+  type Severity,
+  type Shape,
+  type TextShape,
+} from "./types";
 
 let seq = 0;
 const mk = (f: Omit<Finding, "id" | "source">): Finding => ({ ...f, id: `r${++seq}`, source: "rule" });
@@ -25,6 +36,7 @@ const isText = (s: Shape): s is TextShape => s.kind === "text";
 // ============================================================ text, per slide
 
 interface Rule {
+  code: Code;
   re: RegExp;
   category: Finding["category"];
   severity: Severity;
@@ -35,6 +47,7 @@ interface Rule {
 
 const TEXT_RULES: Rule[] = [
   {
+    code: "text.double-space",
     re: /\S(  +)\S/g,
     category: "spacing",
     severity: "warn",
@@ -43,6 +56,7 @@ const TEXT_RULES: Rule[] = [
     suggestion: () => "Collapse to a single space.",
   },
   {
+    code: "text.space-before-punct",
     re: / +([,.;:!?])/g,
     category: "spacing",
     severity: "warn",
@@ -51,6 +65,7 @@ const TEXT_RULES: Rule[] = [
     suggestion: (m) => `Remove the space: “${m[1]}”`,
   },
   {
+    code: "text.missing-space",
     re: /[a-z]([,;:])[A-Za-z]/g,
     category: "spacing",
     severity: "warn",
@@ -59,6 +74,7 @@ const TEXT_RULES: Rule[] = [
     suggestion: (m) => `Add a space after “${m[1]}”.`,
   },
   {
+    code: "text.repeated-word",
     re: /\b([A-Za-z][A-Za-z']{1,})\s+\1\b/gi,
     category: "typo",
     severity: "error",
@@ -67,6 +83,7 @@ const TEXT_RULES: Rule[] = [
     suggestion: (m) => `Delete one “${m[1]}”.`,
   },
   {
+    code: "text.placeholder",
     re: /(lorem ipsum|\bTBD\b|\bTODO\b|\bXXX+\b|\[insert[^\]]*\]|placeholder text|\bFPO\b)/gi,
     category: "placeholder",
     severity: "error",
@@ -75,6 +92,7 @@ const TEXT_RULES: Rule[] = [
     suggestion: () => "Replace with real copy before submitting.",
   },
   {
+    code: "text.doubled-punct",
     re: /([!?])\1+|(?<!\.)\.\.(?!\.)/g,
     category: "punctuation",
     severity: "warn",
@@ -82,6 +100,7 @@ const TEXT_RULES: Rule[] = [
     detail: (m) => `“${m[0]}” — likely a typo.`,
   },
   {
+    code: "text.lowercase-sentence",
     re: /[.!?]\s+([a-z])/g,
     category: "capitalization",
     severity: "info",
@@ -102,6 +121,7 @@ function textChecks(slide: number, shapes: TextShape[]): Finding[] {
         while ((m = rule.re.exec(text))) {
           out.push(
             mk({
+              code: rule.code,
               slide,
               severity: rule.severity,
               category: rule.category,
@@ -119,6 +139,7 @@ function textChecks(slide: number, shapes: TextShape[]): Finding[] {
       if (bal) {
         out.push(
           mk({
+            code: "text.unbalanced",
             slide,
             severity: "warn",
             category: "punctuation",
@@ -236,11 +257,13 @@ function deckTextConsistency(deck: Deck): Finding[] {
     }
     out.push(
       mk({
+        code: "term.case-drift",
         slide: minSlide(forms, bySurface),
         severity: "warn",
         category: "consistency",
-        title: "Inconsistent capitalisation of the same term",
-        detail: `${forms.map((f) => `“${f}”`).join(" vs ")} — pick one spelling.`,
+        title: `“${forms[0]}” vs “${forms.slice(1).join("” vs “")}”`,
+        detail: `The same word is capitalised differently across the deck. Pick one spelling.`,
+        quote: forms.join("  /  "),
         relatedSlides: allSlides(forms, bySurface),
         shapeIds: forms.flatMap((f) => byShape.get(f) ?? []),
       }),
@@ -249,6 +272,7 @@ function deckTextConsistency(deck: Deck): Finding[] {
   if (styling.length) {
     out.push(
       mk({
+        code: "term.case-styling",
         slide: 1,
         severity: "info",
         category: "consistency",
@@ -265,11 +289,13 @@ function deckTextConsistency(deck: Deck): Finding[] {
     if (new Set(forms.map((f) => f.toLowerCase())).size < 2) continue; // pure case drift, handled above
     out.push(
       mk({
+        code: "term.spelling-variant",
         slide: minSlide(forms, bySurface),
         severity: "warn",
         category: "consistency",
-        title: "Same term written different ways",
-        detail: `${forms.map((f) => `“${f}”`).join(" vs ")} — unify across the deck.`,
+        title: `“${forms[0]}” vs “${forms.slice(1).join("” vs “")}”`,
+        detail: `The same term is written more than one way. Unify it across the deck.`,
+        quote: forms.join("  /  "),
         relatedSlides: allSlides(forms, bySurface),
         shapeIds: forms.flatMap((f) => byShape.get(f) ?? []),
       }),
@@ -279,6 +305,7 @@ function deckTextConsistency(deck: Deck): Finding[] {
   if (straight > 0 && curly > 0) {
     out.push(
       mk({
+        code: "style.mixed-quotes",
         slide: 1,
         severity: "info",
         category: "consistency",
@@ -302,6 +329,7 @@ function deckTextConsistency(deck: Deck): Finding[] {
       .join(", ");
     out.push(
       mk({
+        code: "style.title-size",
         slide: 1,
         severity: "info",
         category: "consistency",
@@ -371,11 +399,12 @@ function imageChecks(deck: Deck, slide: number, pics: PicShape[]): Finding[] {
     if (dpi < 96) {
       out.push(
         mk({
+          code: "img.upscaled",
           slide,
           severity: "error",
           category: "resolution",
-          title: `Image is upscaled — will look blurry (${dpi} DPI)`,
-          detail: `${label(pic)} shows ${Math.round(eff.vis.w)}×${Math.round(eff.vis.h)}px stretched to ${dim(pic)}. Below 96 DPI it is enlarged past its native size.`,
+          title: `${name(pic)} will look blurry`,
+          detail: `Only ${Math.round(eff.vis.w)}×${Math.round(eff.vis.h)}px of real pixels, stretched to ${dim(pic)} on the slide. That is ${dpi} DPI — below 96 the image is enlarged past its native size.`,
           suggestion: `Re-export at ≥ ${target}.`,
           shapeIds: [pic.id],
         }),
@@ -383,11 +412,12 @@ function imageChecks(deck: Deck, slide: number, pics: PicShape[]): Finding[] {
     } else if (dpi < 150) {
       out.push(
         mk({
+          code: "img.low-dpi",
           slide,
           severity: "warn",
           category: "resolution",
-          title: `Low effective resolution (${dpi} DPI)`,
-          detail: `${label(pic)} is fine on screen but soft when printed or projected: ${Math.round(eff.vis.w)}×${Math.round(eff.vis.h)}px at ${dim(pic)}.`,
+          title: `${name(pic)} is soft when printed`,
+          detail: `${Math.round(eff.vis.w)}×${Math.round(eff.vis.h)}px shown at ${dim(pic)} — ${dpi} DPI. Fine on a screen, soft on paper or a projector.`,
           suggestion: `Re-export at ≥ ${target}.`,
           shapeIds: [pic.id],
         }),
@@ -403,11 +433,12 @@ function imageChecks(deck: Deck, slide: number, pics: PicShape[]): Finding[] {
         const pct = (Math.abs(dev) * 100).toFixed(1);
         out.push(
           mk({
+            code: "img.distorted",
             slide,
             severity: Math.abs(dev) > 0.05 ? "error" : "warn",
             category: "aspect",
-            title: `Image distorted ${dev > 0 ? "horizontally" : "vertically"} by ${pct}%`,
-            detail: `${label(pic)} native aspect ${srcAr.toFixed(3)} vs displayed ${dispAr.toFixed(3)}. Circles and logos will look wrong.`,
+            title: `${name(pic)} is stretched ${dev > 0 ? "wider" : "taller"} by ${pct}%`,
+            detail: `Native proportions ${srcAr.toFixed(3)} vs displayed ${dispAr.toFixed(3)}. Circles, faces, and logos will look wrong.`,
             suggestion: "Hold Shift while resizing, or reset to original proportions.",
             shapeIds: [pic.id],
           }),
@@ -423,6 +454,7 @@ function imageChecks(deck: Deck, slide: number, pics: PicShape[]): Finding[] {
   if (oversized.length) {
     out.push(
       mk({
+        code: "img.oversized",
         slide,
         severity: "info",
         category: "resolution",
@@ -432,7 +464,7 @@ function imageChecks(deck: Deck, slide: number, pics: PicShape[]): Finding[] {
             : `${oversized.length} large assets rendered very small`,
         detail: `${oversized
           .slice(0, 4)
-          .map((p) => `${label(p)} at ${dim(p)}`)
+          .map((p) => `${name(p)} at ${dim(p)}`)
           .join(", ")}${oversized.length > 4 ? ", …" : ""}. Bloats the file; downsize the source or check for stray elements.`,
         shapeIds: oversized.map((p) => p.id),
       }),
@@ -454,19 +486,22 @@ function imageChecks(deck: Deck, slide: number, pics: PicShape[]): Finding[] {
           nearMiss(d === "width" ? a.rect.w : a.rect.h, d === "width" ? b.rect.w : b.rect.h),
         );
         if (dims.length) {
+          const worst = dims
+            .map((d) => {
+              const av = d === "width" ? a.rect.w : a.rect.h;
+              const bv = d === "width" ? b.rect.w : b.rect.h;
+              return { d, off: Math.abs(av - bv), av, bv };
+            })
+            .sort((x, y) => y.off - x.off)[0];
           out.push(
             mk({
+              code: "img.sibling-size",
               slide,
               severity: "warn",
               category: "consistency",
-              title: `Side-by-side images have near-identical ${dims.join(" and ")} but do not match`,
-              detail: dims
-                .map((d) => {
-                  const av = d === "width" ? a.rect.w : a.rect.h;
-                  const bv = d === "width" ? b.rect.w : b.rect.h;
-                  return `${d}: ${pxOf(av)}px vs ${pxOf(bv)}px (off by ${pxOf(Math.abs(av - bv))}px)`;
-                })
-                .join("; ") + `. ${label(a)} and ${label(b)} were probably meant to be equal.`,
+              title: `Two images side by side are ${pxOf(worst.off)}px apart in ${worst.d}`,
+              detail: `${name(a)} is ${pxOf(worst.av)}px and ${name(b)} is ${pxOf(worst.bv)}px. They sit in the same ${row ? "row" : "column"}, so they were probably meant to match.`,
+              suggestion: `Set both to ${pxOf(Math.max(worst.av, worst.bv))}px ${worst.d}.`,
               shapeIds: [a.id, b.id],
             }),
           );
@@ -478,11 +513,13 @@ function imageChecks(deck: Deck, slide: number, pics: PicShape[]): Finding[] {
         if (d > 0.01 * EMU_PER_INCH && d < 0.045 * EMU_PER_INCH) {
           out.push(
             mk({
+              code: "img.sibling-align",
               slide,
               severity: "warn",
               category: "alignment",
-              title: `Images almost aligned on ${edge === "x" ? "left" : "top"} edge`,
-              detail: `${label(a)} and ${label(b)} differ by ${pxOf(d)}px. Snap them to the same ${edge === "x" ? "left" : "top"} position.`,
+              title: `Two images are ${pxOf(d)}px out of alignment`,
+              detail: `${name(a)} and ${name(b)} should share the same ${edge === "x" ? "left" : "top"} edge but differ by ${pxOf(d)}px.`,
+              suggestion: `Align their ${edge === "x" ? "left" : "top"} edges.`,
               shapeIds: [a.id, b.id],
             }),
           );
@@ -527,13 +564,16 @@ function deckImageConsistency(deck: Deck): Finding[] {
     const max = Math.max(...uses.map((u) => u.w));
     if (max <= 0 || !nearMiss(min, max)) continue;
     const slides = [...new Set(uses.map((u) => u.slide))];
+    const file = key.split("|")[0].split("/").pop();
     out.push(
       mk({
+        code: "img.same-nudged",
         slide: uses[0].slide,
         severity: "warn",
         category: "consistency",
-        title: "Same image nudged to slightly different sizes",
-        detail: `${key.split("|")[0].split("/").pop()} is placed ${uses.length} times at widths ${pxOf(min)}px–${pxOf(max)}px (off by ${pxOf(max - min)}px). Snap them to one size.`,
+        title: `The same image is ${pxOf(max - min)}px wider on some slides`,
+        detail: `${file} is placed ${uses.length} times at widths ${pxOf(min)}px–${pxOf(max)}px. Snap them all to one size.`,
+        suggestion: `Set every copy to ${pxOf(max)}px wide.`,
         relatedSlides: slides,
         shapeIds: uses.map((u) => u.id),
       }),
@@ -563,11 +603,13 @@ function deckImageConsistency(deck: Deck): Finding[] {
       if (odd.length) {
         out.push(
           mk({
+            code: "img.hero-width",
             slide: odd[0].slide,
             severity: "info",
             category: "consistency",
-            title: `Main visual width off the deck standard on ${odd.length} slide${odd.length > 1 ? "s" : ""}`,
+            title: `Main visual is a different width on ${odd.length} slide${odd.length > 1 ? "s" : ""}`,
             detail: `${modeCount} slides use ~${pxOf(modeW)}px; slides ${odd.map((o) => o.slide).join(", ")} use ${odd.map((o) => `${pxOf(o.w)}px`).join(", ")}.`,
+            suggestion: `Set them to ${pxOf(modeW)}px wide.`,
             relatedSlides: odd.map((o) => o.slide),
             shapeIds: odd.map((o) => o.id),
           }),
@@ -596,7 +638,7 @@ function geometryChecks(deck: Deck): Finding[] {
       if (w <= 0 || h <= 0) continue;
 
       if (x + w <= 0 || y + h <= 0 || x >= W || y >= H) {
-        const sample = sh.kind === "text" ? sh.paragraphs[0]?.text.slice(0, 50) ?? sh.name : label(sh);
+        const sample = sh.kind === "text" ? sh.paragraphs[0]?.text.slice(0, 50) ?? sh.name : name(sh);
         const key = `${sh.kind}:${sample}`;
         const e = parked.get(key) ?? parked.set(key, { slides: [], ids: [], sample }).get(key)!;
         e.slides.push(slide.index);
@@ -607,13 +649,20 @@ function geometryChecks(deck: Deck): Finding[] {
       const overR = x + w - W;
       const overB = y + h - H;
       if (sh.kind === "text" && (overR > tol || overB > tol || x < -tol || y < -tol)) {
+        const dirs = [
+          overR > tol ? `${inches(overR).toFixed(2)}in past the right edge` : "",
+          overB > tol ? `${inches(overB).toFixed(2)}in past the bottom` : "",
+          x < -tol ? `${inches(-x).toFixed(2)}in past the left edge` : "",
+          y < -tol ? `${inches(-y).toFixed(2)}in above the top` : "",
+        ].filter(Boolean);
         out.push(
           mk({
+            code: "geo.text-overflow",
             slide: slide.index,
             severity: "warn",
             category: "geometry",
-            title: "Text box extends past the slide edge",
-            detail: `“${sh.paragraphs[0]?.text.slice(0, 60) ?? sh.name}” overflows by ${overR > tol ? `${inches(overR).toFixed(2)}in to the right` : ""}${overB > tol ? ` ${inches(overB).toFixed(2)}in below` : ""}${x < -tol ? ` ${inches(-x).toFixed(2)}in to the left` : ""}. Text may be cut off.`,
+            title: "A text box runs off the slide",
+            detail: `“${sh.paragraphs[0]?.text.slice(0, 60) ?? sh.name}” extends ${dirs.join(" and ")}. Text may be cut off.`,
             shapeIds: [sh.id],
           }),
         );
@@ -625,11 +674,12 @@ function geometryChecks(deck: Deck): Finding[] {
         if (hiddenFrac > 0.7) {
           out.push(
             mk({
+              code: "geo.pic-offslide",
               slide: slide.index,
               severity: "warn",
               category: "geometry",
-              title: "Image mostly outside the slide",
-              detail: `${Math.round(hiddenFrac * 100)}% of ${label(sh)} is off the canvas and never renders — leftover element?`,
+              title: `${Math.round(hiddenFrac * 100)}% of an image is off the slide`,
+              detail: `${name(sh)} is mostly outside the canvas and never renders — leftover element?`,
               shapeIds: [sh.id],
             }),
           );
@@ -641,14 +691,15 @@ function geometryChecks(deck: Deck): Finding[] {
   for (const [, e] of parked) {
     out.push(
       mk({
+        code: "geo.parked",
         slide: e.slides[0],
         severity: "info",
         category: "geometry",
         title:
           e.slides.length > 1
-            ? `Hidden element parked off-canvas on ${e.slides.length} slides`
-            : "Hidden element parked off-canvas",
-        detail: `“${e.sample}” sits entirely outside the slide area, so it never renders. Delete it or move it back.`,
+            ? `A hidden element sits off-canvas on ${e.slides.length} slides`
+            : "A hidden element sits off-canvas",
+        detail: `“${e.sample}” is entirely outside the slide area, so it never renders. Delete it or move it back.`,
         relatedSlides: e.slides,
         shapeIds: e.ids,
       }),
@@ -662,5 +713,12 @@ function geometryChecks(deck: Deck): Finding[] {
 
 const pxOf = (emu: number) => Math.round((emu / EMU_PER_INCH) * 96);
 const dim = (p: PicShape) => `${pxOf(p.rect.w)}×${pxOf(p.rect.h)}px`;
-const label = (s: Shape) =>
-  s.kind === "pic" ? `“${s.descr || s.name || s.media.split("/").pop()}”` : `“${s.name}”`;
+
+/** Prefer the alt-text/title an author actually wrote over "Google Shape;134;p16". */
+function name(s: Shape): string {
+  if (s.kind !== "pic") return s.name || "Shape";
+  const raw = s.descr || s.name || "";
+  const clean = raw.split("\n")[0].trim();
+  const generic = /^(Google Shape|Picture|Image|Shape)\b/i.test(clean) || !clean;
+  return generic ? (s.media.split("/").pop() ?? "Image") : clean.length > 48 ? `${clean.slice(0, 46)}…` : clean;
+}
