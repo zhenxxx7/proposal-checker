@@ -27,6 +27,7 @@ export function runRuleChecks(deck: Deck): Finding[] {
     ...geometryChecks(deck),
     ...deckTextConsistency(deck),
     ...deckImageConsistency(deck),
+    ...duplicateSlides(deck),
   ];
 }
 
@@ -618,6 +619,90 @@ function deckImageConsistency(deck: Deck): Finding[] {
     }
   }
 
+  return out;
+}
+
+// ============================================================ duplicate slides
+
+/**
+ * Two slides are near-duplicates when they share most of their content images
+ * AND most of their body text. Comparing images matters: a repeated footer/logo
+ * alone is a template, not a duplicate — the *content* pictures have to match too.
+ */
+function duplicateSlides(deck: Deck): Finding[] {
+  const slideArea = deck.widthEmu * deck.heightEmu;
+
+  // A picture big enough to be content, keyed by file + crop (a sprite-sheet crop
+  // is its own image). The FXMedia logo repeats everywhere, so weight by content.
+  const fingerprint = deck.slides.map((slide) => {
+    const media = new Set<string>();
+    for (const sh of slide.shapes) {
+      if (sh.kind !== "pic") continue;
+      if ((sh.rect.w * sh.rect.h) / slideArea < 0.02) continue; // skip tiny logos/icons
+      const crop = [sh.crop.l, sh.crop.t, sh.crop.r, sh.crop.b].map((v) => v.toFixed(3)).join(",");
+      media.add(`${sh.media}|${crop}`);
+    }
+    const words = new Set<string>();
+    for (const sh of slide.shapes) {
+      if (sh.kind !== "text") continue;
+      for (const p of sh.paragraphs) for (const w of p.text.toLowerCase().match(/[a-z0-9][a-z0-9'-]{2,}/g) ?? []) words.add(w);
+    }
+    return { index: slide.index, media, words };
+  });
+
+  const jaccard = <T,>(a: Set<T>, b: Set<T>): number => {
+    if (a.size === 0 && b.size === 0) return 1;
+    let inter = 0;
+    for (const x of a) if (b.has(x)) inter++;
+    return inter / (a.size + b.size - inter);
+  };
+
+  // Union-find so 3+ identical slides collapse into one cluster.
+  const parent = fingerprint.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+
+  for (let i = 0; i < fingerprint.length; i++) {
+    for (let j = i + 1; j < fingerprint.length; j++) {
+      const a = fingerprint[i];
+      const b = fingerprint[j];
+      // A slide needs some content to be a meaningful duplicate.
+      if (a.media.size === 0 && a.words.size < 4) continue;
+
+      const mediaSim = a.media.size || b.media.size ? jaccard(a.media, b.media) : 1;
+      const textSim = jaccard(a.words, b.words);
+      const dup =
+        (a.media.size >= 1 && mediaSim >= 0.7 && textSim >= 0.5) || // same photos + most text
+        (a.media.size === 0 && textSim >= 0.9); // text-only slides that are all but identical
+      if (dup) parent[find(i)] = find(j);
+    }
+  }
+
+  const clusters = new Map<number, number[]>();
+  for (let i = 0; i < fingerprint.length; i++) {
+    const root = find(i);
+    (clusters.get(root) ?? clusters.set(root, []).get(root)!).push(fingerprint[i].index);
+  }
+
+  const out: Finding[] = [];
+  for (const members of clusters.values()) {
+    if (members.length < 2) continue;
+    const sorted = [...members].sort((a, b) => a - b);
+    const rest = sorted.slice(1);
+    out.push(
+      mk({
+        code: "slide.duplicate",
+        slide: sorted[0],
+        severity: "warn",
+        category: "consistency",
+        title:
+          members.length === 2
+            ? `Slide ${sorted[1]} looks like a duplicate of slide ${sorted[0]}`
+            : `${members.length} near-identical slides (${sorted.join(", ")})`,
+        detail: `Slides ${sorted.join(", ")} share the same images and almost the same text. Keep one, or make sure each is meant to be there.`,
+        relatedSlides: rest,
+      }),
+    );
+  }
   return out;
 }
 

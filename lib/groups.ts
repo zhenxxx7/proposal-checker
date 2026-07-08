@@ -63,6 +63,13 @@ const DEFS: Def[] = [
     why: "Grammar and wording flagged by the AI pass.",
   },
   {
+    key: "duplicate",
+    icon: "⧉",
+    codes: ["slide.duplicate"],
+    title: (n) => plural(n, "A slide looks duplicated", "{n} sets of duplicated slides"),
+    why: "Same images and text on more than one slide — usually a copy-paste left behind.",
+  },
+  {
     key: "terminology",
     icon: "🔤",
     codes: ["term.spelling-variant", "term.case-drift"],

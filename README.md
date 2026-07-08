@@ -55,6 +55,16 @@ internally-capitalised form.
 | Element parked entirely off-canvas (aggregated across slides) | minor |
 | Large asset rendered tiny — file bloat or stray element | minor |
 
+### Slides
+| Check | Severity |
+|---|---|
+| Near-duplicate slides — same content images **and** most of the same text | review |
+
+A repeated footer or logo is not enough to flag a slide: duplicate detection
+requires the *content* pictures (≥2% of the slide, keyed by file + crop) to
+match as well as the body text (Jaccard ≥ 0.7 on images, ≥ 0.5 on text). Three
+or more identical slides collapse into one finding via union-find.
+
 Effective DPI accounts for PowerPoint's crop rectangle (`a:srcRect`) and 90°
 rotation, so a 40px logo cropped out of a 2000px sprite sheet is measured as 40px,
 not 2000px.

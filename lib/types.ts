@@ -45,6 +45,7 @@ export type Code =
   | "geo.text-overflow"
   | "geo.pic-offslide"
   | "geo.parked"
+  | "slide.duplicate"
   | "ai.text"
   | "ai.image";
 
