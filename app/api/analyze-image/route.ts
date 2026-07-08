@@ -1,4 +1,4 @@
-import { askForFindings } from "@/lib/anthropic";
+import { askForFindings } from "@/lib/ai/client";
 
 export const maxDuration = 300;
 
@@ -9,7 +9,6 @@ interface Body {
   mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   /** text sitting on the same slide, for terminology cross-checks */
   slideText?: string;
-  /** how big the image renders on the slide, in px */
   displayPx?: { w: number; h: number };
 }
 
@@ -19,11 +18,11 @@ Read every piece of text rendered in the image: buttons, labels, nav items, head
 - Spelling mistakes and typos in the image text.
 - Grammar errors in sentences shown in the UI.
 - Text that is clipped, truncated, or overflowing its container so a word is cut off.
-- Placeholder content that should not ship: "Lorem ipsum", "Your text here", "Label", stock names in a real screen, obviously fake data presented as real.
+- Placeholder content that should not ship: "Lorem ipsum", "Your text here", "Label", obviously fake data presented as real.
 - Terminology that contradicts the slide text supplied below (same feature named two ways).
-- Text so small or low-contrast in the rendered image that it is unreadable at the size the image occupies on the slide.
+- Text so small or low-contrast that it is unreadable at the size the image occupies on the slide.
 
-Use category "image-text" for anything found inside the image. Set "quote" to the exact text as it appears in the image, and "suggestion" to the corrected text. In "detail", say where in the image it is ("primary CTA button", "left sidebar, third nav item") so the designer can find it.
+Always use category "image-text". Set "quote" to the exact text as it appears in the image, and "suggestion" to the corrected text. In "detail", say where in the image it is ("primary CTA button", "left sidebar, third nav item") so the designer can find it.
 
 Do NOT report:
 - Design or layout opinions, colour choices, spacing.
@@ -31,11 +30,11 @@ Do NOT report:
 - Brand names, product names, or non-English words you do not recognise.
 - Text you cannot read confidently. Skip it rather than guess.
 
-If the image contains no text, or the text is clean, return an empty findings array. That is the expected result for most images.`;
+Respond with JSON only, matching: {"findings":[{"slide":1,"severity":"error","category":"image-text","quote":"...","suggestion":"...","detail":"..."}]}
+If the image has no text, or the text is clean, return {"findings":[]}. That is the expected result for most images.`;
 
 export async function POST(req: Request) {
-  const body = (await req.json()) as Body;
-  const { slide, image, mediaType, slideText, displayPx } = body;
+  const { slide, image, mediaType, slideText, displayPx } = (await req.json()) as Body;
 
   if (!image || !mediaType) {
     return Response.json({ findings: [], error: "image and mediaType required" }, { status: 400 });
@@ -52,10 +51,10 @@ export async function POST(req: Request) {
 
   try {
     const findings = await askForFindings(SYSTEM, [
-      { type: "image", source: { type: "base64", media_type: mediaType, data: image } },
+      { type: "image_url", image_url: { url: `data:${mediaType};base64,${image}` } },
       { type: "text", text: context },
     ]);
-    // The model is told the slide number but occasionally echoes 1; force it.
+    // The model is told the slide number but often echoes 1; force it.
     return Response.json({ findings: findings.map((f) => ({ ...f, slide, category: "image-text" as const })) });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

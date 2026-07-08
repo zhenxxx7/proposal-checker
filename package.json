@@ -8,10 +8,11 @@
     "start": "next start",
     "lint": "eslint",
     "check": "tsx scripts/check.ts",
-    "verify:ui": "node scripts/verify-ui.mjs"
+    "verify:ui": "node scripts/verify-ui.mjs",
+    "verify:ai": "node scripts/verify-ai.mjs",
+    "mock:ai": "node scripts/mock-ai.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.110.0",
     "fflate": "^0.8.3",
     "next": "16.2.10",
     "react": "19.2.4",

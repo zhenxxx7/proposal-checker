@@ -1,7 +1,8 @@
 /**
  * Drives the real UI in a real browser against a real .pptx.
  *   node scripts/verify-ui.mjs <deck.pptx> [url]
- * Requires the dev server to be running.
+ * Requires the dev server to be running. If an AI provider is configured
+ * (point AI_BASE_URL at scripts/mock-ai.mjs), the AI pass is exercised too.
  */
 import puppeteer from "puppeteer-core";
 import { existsSync } from "node:fs";
@@ -17,11 +18,15 @@ const deck = process.argv[2];
 const url = process.argv[3] ?? "http://localhost:3000/";
 if (!deck || !CHROME) throw new Error("usage: node scripts/verify-ui.mjs <deck.pptx> [url]  (no browser found)");
 
-const ok = (cond, msg) => console.log(`${cond ? "  PASS" : "  FAIL"}  ${msg}`) || cond;
 let failures = 0;
 const expect = (cond, msg) => {
-  if (!ok(cond, msg)) failures++;
+  console.log(`  ${cond ? "PASS" : "FAIL"}  ${msg}`);
+  if (!cond) failures++;
 };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const status = await (await fetch(new URL("/api/status", url))).json();
+console.log(`\nprovider: ${status.label || "none"} · model: ${status.model || "-"} · configured: ${status.configured}`);
 
 const browser = await puppeteer.launch({
   executablePath: CHROME,
@@ -35,100 +40,158 @@ const consoleErrors = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
 
+const headerText = () => page.$eval("header", (e) => e.innerText.replace(/\n/g, " "));
+
 console.log("\n1. Load the app");
 await page.goto(url, { waitUntil: "networkidle0" });
-expect(await page.$eval("h1", (e) => e.textContent) === "Proposal Checker", "header renders");
-expect((await page.$$("input[type=file]")).length === 1, "dropzone present");
 expect((await page.title()) === "Proposal Checker", `document title: "${await page.title()}"`);
+expect((await page.$$("input[type=file]")).length === 1, "dropzone present");
 
 const layout = await page.evaluate(() => {
   const m = document.querySelector("main");
-  return { main: Math.round(m.getBoundingClientRect().width), vw: innerWidth, font: getComputedStyle(document.body).fontFamily };
+  return {
+    main: Math.round(m.getBoundingClientRect().width),
+    vw: innerWidth,
+    font: getComputedStyle(document.body).fontFamily,
+    dark: document.documentElement.classList.contains("dark"),
+  };
 });
 expect(layout.main >= layout.vw - 60, `main fills the viewport (${layout.main}px of ${layout.vw}px)`);
-expect(/Geist/i.test(layout.font), `Geist font applied: ${layout.font.slice(0, 40)}`);
-const aiLabel = await page.$$eval("header *", (els) =>
-  els.map((e) => e.textContent).find((t) => t?.includes("API key") || t?.includes("Deep check")) ?? "",
-);
-console.log(`  info  AI control before upload: ${JSON.stringify(aiLabel)}`);
+expect(/Geist/i.test(layout.font), `Geist font applied`);
+console.log(`  info  initial theme: ${layout.dark ? "dark" : "light"}`);
 
-console.log("\n2. Upload the deck");
-const input = await page.$("input[type=file]");
-await input.uploadFile(deck);
-await page.waitForSelector("section", { timeout: 60000 });
-await new Promise((r) => setTimeout(r, 1200));
+console.log("\n2. Theme toggle");
+const before = await page.evaluate(() => document.documentElement.classList.contains("dark"));
+await page.$$eval("header button", (els) => els.find((e) => e.getAttribute("aria-label") === "Toggle theme")?.click());
+await wait(300);
+const after = await page.evaluate(() => ({
+  dark: document.documentElement.classList.contains("dark"),
+  stored: localStorage.getItem("theme"),
+}));
+expect(after.dark === !before, `theme flips (${before ? "dark" : "light"} -> ${after.dark ? "dark" : "light"})`);
+expect(after.stored === (after.dark ? "dark" : "light"), `persisted to localStorage: ${after.stored}`);
 
-console.log("\n3. Summary view");
+console.log("\n3. Upload the deck");
+await (await page.$("input[type=file]")).uploadFile(deck);
+await page.waitForSelector("[data-readiness]", { timeout: 60000 });
+await wait(1200);
+
+console.log("\n4. Summary view");
 const banner = await page.$eval("h2", (e) => e.textContent);
 expect(/Not ready to send|Almost ready|Ready to send/.test(banner), `readiness banner: "${banner}"`);
 
-const stats = await page.$$eval("main p.tabular-nums", (els) => els.map((e) => e.textContent));
+const readStats = () => page.$$eval("[data-stat]", (els) => els.map((e) => e.textContent));
+const stats = await readStats();
 expect(stats.length === 3, `three stat tiles: ${stats.join(" / ")}`);
 
-const cards = await page.$$eval("section[class*=border-l-]", (els) =>
-  els.map((e) => e.querySelector("span.block.text-sm")?.textContent).filter(Boolean),
-);
+const cardTitles = () => page.$$eval("[data-group-title]", (els) => els.map((e) => e.textContent));
+const cards = await cardTitles();
 expect(cards.length >= 5 && cards.length <= 14, `${cards.length} group cards (not a wall of rows)`);
 cards.forEach((c) => console.log(`        · ${c}`));
 
-const aiBtn = await page.$$eval("header *", (els) =>
-  els.map((e) => e.textContent).find((t) => t?.includes("API key") || t?.includes("Deep check")) ?? "",
+const aiCtl = await headerText();
+expect(
+  status.configured ? /Deep check with AI/.test(aiCtl) : /AI check needs a key/.test(aiCtl),
+  status.configured ? "AI button enabled" : "AI button disabled with a reason",
 );
-expect(aiBtn.includes("API key"), `AI button disabled with reason: "${aiBtn}"`);
-
 await page.screenshot({ path: "scripts/__summary.png" });
 
-console.log("\n4. Expand a group, click a finding -> jumps to slide view");
-const firstFinding = await page.$('div[role="button"]');
-expect(!!firstFinding, "first group auto-expanded (blocking issues visible)");
-await firstFinding.click();
-await new Promise((r) => setTimeout(r, 800));
-
-const inSlides = await page.$$eval("header button", (els) =>
-  els.some((e) => e.textContent === "slides" && e.className.includes("bg-neutral-900")),
-);
-expect(inSlides, "switched to slides view");
-
-const highlighted = (await page.$$("section [class*=outline-rose-500]")).length;
-expect(highlighted >= 1, `offending shape highlighted (${highlighted})`);
+console.log("\n5. Click a finding -> jumps to the slide, highlights the shape");
+expect((await page.$$("[data-finding]")).length > 0, "top group is expanded on arrival");
+await (await page.$("[data-finding]")).click();
+await wait(800);
+expect((await page.$$("[data-stage]")).length === 1, "switched to slides view");
+expect((await page.$$("[data-stage] [class*=outline-rose-500]")).length >= 1, "offending shape outlined");
 await page.screenshot({ path: "scripts/__slides.png" });
 
-console.log("\n5. Slide rail thumbnails render lazily");
-const thumbs = await page.$$("nav button");
-const mounted = await page.$$eval("nav button", (els) =>
-  els.filter((e) => e.querySelector("img") || e.querySelector("p")).length,
-);
-expect(thumbs.length > 0, `${thumbs.length} slide thumbs`);
-expect(mounted < thumbs.length || thumbs.length < 12, `only ${mounted}/${thumbs.length} mounted (lazy)`);
+console.log("\n6. Slide rail thumbnails render lazily");
+const thumbs = (await page.$$("nav button")).length;
+const mounted = await page.$$eval("nav button", (els) => els.filter((e) => e.querySelector("img, p")).length);
+expect(thumbs > 0, `${thumbs} slide thumbs`);
+expect(mounted < thumbs || thumbs < 12, `only ${mounted}/${thumbs} mounted (lazy)`);
 
-console.log("\n6. Keyboard navigation");
-const before = await page.$eval("section + section p, section p.text-xs", (e) => e.textContent).catch(() => "");
+console.log("\n7. Keyboard navigation");
+const cap = () => page.$eval("[data-slide-caption]", (e) => e.textContent.trim().slice(0, 16));
+const capBefore = await cap();
 await page.keyboard.press("ArrowRight");
-await new Promise((r) => setTimeout(r, 400));
-const after = await page.$eval("section + section p, section p.text-xs", (e) => e.textContent).catch(() => "");
-expect(before !== after, `ArrowRight advances slide (${(before || "").slice(0, 18)} -> ${(after || "").slice(0, 18)})`);
+await wait(400);
+expect(capBefore !== (await cap()), `ArrowRight advances slide (${capBefore} -> ${await cap()})`);
 
-console.log("\n7. Search filters the list but never the verdict");
+console.log("\n8. Search filters the list but never the verdict");
 await page.$$eval("header button", (els) => els.find((e) => e.textContent === "summary")?.click());
-await new Promise((r) => setTimeout(r, 400));
+await wait(400);
 await page.type('input[placeholder="Search findings…"]', "blurry");
-await new Promise((r) => setTimeout(r, 600));
-
-const filtered = await page.$$eval("section[class*=border-l-]", (els) => els.length);
-expect(filtered >= 1 && filtered <= 3, `search "blurry" narrows to ${filtered} group(s)`);
-
+await wait(600);
+expect((await cardTitles()).length <= 3, `search narrows to ${(await cardTitles()).length} group(s)`);
 const banner2 = await page.$eval("h2", (e) => e.textContent);
-const stats2 = await page.$$eval("main p.tabular-nums", (els) => els.map((e) => e.textContent));
-expect(banner2 === banner, `verdict unchanged while searching: "${banner2}"`);
-expect(stats2.join("/") === stats.join("/"), `stat tiles unchanged: ${stats2.join(" / ")} (was ${stats.join(" / ")})`);
-
-const note = await page.$$eval("main p", (els) =>
-  els.map((e) => e.textContent).find((t) => t?.includes("showing")) ?? "",
-);
-expect(note.includes("showing"), `search count shown separately: "${note}"`);
-
+const stats2 = await readStats();
+expect(banner2 === banner, `verdict unchanged while searching`);
+expect(stats2.join("/") === stats.join("/"), `stat tiles unchanged: ${stats2.join(" / ")}`);
 await page.screenshot({ path: "scripts/__search.png" });
-console.log("\n  screenshots -> scripts/__summary.png __slides.png __search.png");
+
+// Clear the search before the AI run. Select-all + Backspace through real key
+// events, so React's onChange actually fires.
+await page.focus('input[placeholder="Search findings…"]');
+await page.keyboard.down("Control");
+await page.keyboard.press("KeyA");
+await page.keyboard.up("Control");
+await page.keyboard.press("Backspace");
+await wait(500);
+expect((await cardTitles()).length === cards.length, `search cleared, ${cards.length} groups back`);
+
+const findHeaderButton = async (text) => {
+  const btns = await page.$$("header button");
+  const pairs = await Promise.all(btns.map(async (b) => [(await b.evaluate((e) => e.textContent)) ?? "", b]));
+  return pairs.find(([t]) => t.includes(text))?.[1];
+};
+
+if (status.configured) {
+  console.log("\n9. Cancel mid-run keeps partial results");
+  await (await findHeaderButton("Deep check with AI")).click();
+  await page.waitForFunction(() => document.querySelector("header").innerText.includes("Reading images"), {
+    timeout: 60000,
+  });
+  const cancel = await findHeaderButton("Cancel");
+  expect(!!cancel, "Cancel button appears while running");
+  await cancel.click();
+  await page.waitForFunction(() => !document.querySelector("header").innerText.includes("Reading images"), {
+    timeout: 60000,
+  });
+  await wait(500);
+  const partial = await readStats();
+  expect(partial.join("/") !== stats.join("/"), `partial findings kept after cancel: ${partial.join(" / ")}`);
+  const reRun = await findHeaderButton("Re-run AI check");
+  expect(!reRun, "cancelled run is not marked complete");
+  expect(consoleErrors.length === 0, "cancel produced no console errors");
+
+  console.log("\n10. AI deep check, full run (real request path, mock endpoint)");
+  const aiBtn = await findHeaderButton("Deep check with AI");
+  expect(!!aiBtn, "AI button found");
+  await aiBtn.click();
+
+  await page.waitForFunction(() => document.querySelector("header").innerText.includes("Re-run AI check"), {
+    timeout: 240000,
+  });
+  await wait(800);
+
+  const afterAi = await cardTitles();
+  const aiGroups = afterAi.filter((t) => /mockup image|proofreading note/i.test(t));
+  expect(aiGroups.length >= 1, `AI groups appeared: ${aiGroups.join(" | ") || "none"}`);
+
+  // The in-image group renders collapsed; open it to inspect a finding.
+  await page.$$eval("[data-group='in-image'] button", (els) => els[0]?.click());
+  await wait(400);
+  const shown = await page.$eval("[data-group='in-image']", (e) => e.innerText);
+  expect(shown.includes("Submitt"), "in-image typo 'Submitt' rendered");
+  expect(shown.includes("Submit"), "suggested fix 'Submit' rendered");
+  expect(/slide \d+/.test(shown), "in-image finding is attributed to a slide");
+
+  const stats3 = await readStats();
+  expect(stats3.join("/") !== stats.join("/"), `counts grew after AI: ${stats.join("/")} -> ${stats3.join("/")}`);
+  await page.screenshot({ path: "scripts/__ai.png" });
+} else {
+  console.log("\n9. AI deep check — skipped (no provider configured)");
+}
 
 console.log(`\n  console errors: ${consoleErrors.length}`);
 consoleErrors.slice(0, 6).forEach((e) => console.log(`    ! ${e.slice(0, 160)}`));

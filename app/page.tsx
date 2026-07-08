@@ -6,6 +6,7 @@ import { FindingCard } from "@/components/FindingCard";
 import { SlidePreview } from "@/components/SlidePreview";
 import { SlideRail, countBySlide } from "@/components/SlideRail";
 import { Summary } from "@/components/Summary";
+import { Button, Card, SearchInput, Tabs, ThemeToggle } from "@/components/ui";
 import { analyzeImages, analyzeText, selectImageJobs } from "@/lib/aiClient";
 import { runRuleChecks } from "@/lib/checks";
 import { groupFindings } from "@/lib/groups";
@@ -14,7 +15,14 @@ import { bySeverity, download, toMarkdown } from "@/lib/report";
 import type { Deck, Finding } from "@/lib/types";
 
 type Phase = "idle" | "parsing" | "ready" | "ai";
-type View = "summary" | "slides";
+const VIEWS = ["summary", "slides"] as const;
+type View = (typeof VIEWS)[number];
+
+interface Status {
+  configured: boolean;
+  label: string;
+  model: string;
+}
 
 export default function Page() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -25,8 +33,9 @@ export default function Page() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ done: 0, total: 0, label: "" });
-  const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [status, setStatus] = useState<Status | null>(null);
   const [aiDone, setAiDone] = useState(false);
+  const [abort, setAbort] = useState<AbortController | null>(null);
 
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
@@ -38,8 +47,8 @@ export default function Page() {
   useEffect(() => {
     fetch("/api/status")
       .then((r) => r.json())
-      .then((j: { hasKey: boolean }) => setHasKey(j.hasKey))
-      .catch(() => setHasKey(false));
+      .then((j: Status) => setStatus(j))
+      .catch(() => setStatus({ configured: false, label: "", model: "" }));
   }, []);
 
   const load = useCallback(async (file: File) => {
@@ -75,6 +84,8 @@ export default function Page() {
 
   const runAi = useCallback(async () => {
     if (!deck) return;
+    const controller = new AbortController();
+    setAbort(controller);
     setPhase("ai");
     setError(null);
     setFindings((f) => f.filter((x) => x.source === "rule"));
@@ -82,18 +93,24 @@ export default function Page() {
     try {
       const total = imageJobs.length + 1;
       setProgress({ done: 0, total, label: "Proofreading slide text…" });
-      const text = await analyzeText(deck);
+      const text = await analyzeText(deck, controller.signal);
       setFindings((f) => [...f, ...text]);
       setProgress({ done: 1, total, label: `Reading ${imageJobs.length} images…` });
 
-      const images = await analyzeImages(imageJobs, (done, n) =>
-        setProgress({ done: done + 1, total, label: `Reading images ${done}/${n}…` }),
+      // Returns whatever it collected before an abort — a cancelled run still
+      // shows the images it managed to read.
+      const images = await analyzeImages(
+        imageJobs,
+        (done, n) => setProgress({ done: done + 1, total, label: `Reading images ${done}/${n}…` }),
+        2,
+        controller.signal,
       );
       setFindings((f) => [...f, ...images]);
-      setAiDone(true);
+      if (!controller.signal.aborted) setAiDone(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "AI check failed.");
+      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "AI check failed.");
     } finally {
+      setAbort(null);
       setPhase("ready");
       setProgress({ done: 0, total: 0, label: "" });
     }
@@ -101,8 +118,8 @@ export default function Page() {
 
   const matches = useCallback(
     (f: Finding) => {
-      if (!query.trim()) return true;
-      const q = query.toLowerCase();
+      const q = query.trim().toLowerCase();
+      if (!q) return true;
       return (
         f.title.toLowerCase().includes(q) ||
         f.detail.toLowerCase().includes(q) ||
@@ -117,10 +134,7 @@ export default function Page() {
   const perSlide = useMemo(() => countBySlide(findings), [findings]);
 
   const slideFindings = useMemo(
-    () =>
-      filtered
-        .filter((f) => f.slide === slide || f.relatedSlides?.includes(slide))
-        .sort(bySeverity),
+    () => filtered.filter((f) => f.slide === slide || f.relatedSlides?.includes(slide)).sort(bySeverity),
     [filtered, slide],
   );
 
@@ -145,156 +159,161 @@ export default function Page() {
   const current = deck?.slides.find((s) => s.index === slide);
   const highlight = new Set(findings.find((f) => f.id === active)?.shapeIds ?? []);
 
-  // w-full: `mx-auto` on a column flex child would otherwise shrink main to content width.
   return (
-    <main className="mx-auto flex w-full max-w-[1600px] flex-1 flex-col gap-5 p-4 md:p-6">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">Proposal Checker</h1>
-          <p className="truncate text-xs text-neutral-500">
-            {deck ? `${fileName} · ${deck.slides.length} slides` : "Typos, blurry images, and inconsistent sizing"}
-          </p>
+    <>
+      <header className="sticky top-0 z-30 border-b border-zinc-200 bg-white/80 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/80">
+        <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-3 px-4 md:px-6">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900">
+              <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="m3 10.5 4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold leading-tight tracking-tight">Proposal Checker</p>
+              {deck && (
+                <p className="truncate text-[11px] leading-tight text-zinc-400">
+                  {fileName} · {deck.slides.length} slides
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="ml-auto flex items-center gap-2">
+            {deck && (
+              <>
+                <div className="hidden sm:block">
+                  <Tabs value={view} options={VIEWS} onChange={setView} />
+                </div>
+                <div className="hidden md:block">
+                  <SearchInput value={query} onChange={setQuery} />
+                </div>
+                <Button
+                  onClick={() =>
+                    download(`${fileName}.check.md`, toMarkdown(fileName, deck.slides.length, findings), "text/markdown")
+                  }
+                >
+                  Export
+                </Button>
+                {phase === "ai" && abort && (
+                  <Button onClick={() => abort.abort()} title="Stop and keep what was found so far">
+                    Cancel
+                  </Button>
+                )}
+                <AiButton
+                  phase={phase}
+                  status={status}
+                  aiDone={aiDone}
+                  images={imageJobs.length}
+                  label={progress.label}
+                  onClick={runAi}
+                />
+              </>
+            )}
+            <ThemeToggle />
+          </div>
         </div>
 
-        {deck && (
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex rounded-md border border-neutral-300 p-0.5 dark:border-neutral-700">
-              {(["summary", "slides"] as const).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={`rounded px-3 py-1 text-xs font-medium capitalize transition ${
-                    view === v
-                      ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
-                      : "text-neutral-500 hover:text-neutral-900 dark:hover:text-white"
-                  }`}
-                >
-                  {v}
-                </button>
-              ))}
-            </div>
-
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search findings…"
-              className="w-44 rounded-md border border-neutral-300 bg-transparent px-2.5 py-1.5 text-xs outline-none placeholder:text-neutral-400 focus:border-neutral-900 dark:border-neutral-700 dark:focus:border-white"
-            />
-
-            <button
-              onClick={() =>
-                download(`${fileName}.check.md`, toMarkdown(fileName, deck.slides.length, findings), "text/markdown")
-              }
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Export report
-            </button>
-
-            <AiButton
-              phase={phase}
-              hasKey={hasKey}
-              aiDone={aiDone}
-              images={imageJobs.length}
-              label={progress.label}
-              onClick={runAi}
+        {phase === "ai" && progress.total > 0 && (
+          <div className="h-0.5 w-full bg-zinc-200 dark:bg-zinc-800">
+            <div
+              className="h-full bg-indigo-600 transition-all duration-300 dark:bg-indigo-400"
+              style={{ width: `${(progress.done / progress.total) * 100}%` }}
             />
           </div>
         )}
       </header>
 
-      {error && (
-        <p className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
-          {error}
-        </p>
-      )}
+      <main className="mx-auto flex w-full max-w-[1600px] flex-1 flex-col gap-4 p-4 md:p-6">
+        {error && (
+          <Card className="border-rose-300 bg-rose-50 px-4 py-2.5 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
+            {error}
+          </Card>
+        )}
 
-      {phase === "ai" && progress.total > 0 && (
-        <div className="h-1 w-full overflow-hidden rounded bg-neutral-200 dark:bg-neutral-800">
-          <div
-            className="h-full bg-neutral-900 transition-all dark:bg-white"
-            style={{ width: `${(progress.done / progress.total) * 100}%` }}
-          />
-        </div>
-      )}
+        {!deck && <Dropzone busy={phase === "parsing"} onFile={load} />}
 
-      {!deck && <Dropzone busy={phase === "parsing"} onFile={load} />}
+        {deck && view === "summary" && (
+          <Summary all={findings} groups={groups} slideCount={deck.slides.length} query={query} onOpen={openFinding} />
+        )}
 
-      {deck && view === "summary" && (
-        <Summary all={findings} groups={groups} slideCount={deck.slides.length} query={query} onOpen={openFinding} />
-      )}
+        {deck && view === "slides" && current && (
+          <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[10rem_1fr_24rem]">
+            <SlideRail deck={deck} urls={urls} counts={perSlide} current={slide} onPick={setSlide} />
 
-      {deck && view === "slides" && current && (
-        <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[9.5rem_1fr_24rem]">
-          <SlideRail deck={deck} urls={urls} counts={perSlide} current={slide} onPick={setSlide} />
+            <section data-stage className="min-w-0">
+              <Card className="overflow-hidden p-0">
+                <SlidePreview deck={deck} slide={current} urls={urls} highlight={highlight} />
+              </Card>
+              <p data-slide-caption className="mt-2.5 text-xs text-zinc-400">
+                Slide {slide} of {deck.slides.length} · <kbd className="font-mono">←</kbd>{" "}
+                <kbd className="font-mono">→</kbd> to move · approximate reconstruction, click a finding to highlight its
+                shape
+              </p>
+            </section>
 
-          <section className="min-w-0">
-            <div className="overflow-hidden rounded-lg border border-neutral-300 shadow-sm dark:border-neutral-700">
-              <SlidePreview deck={deck} slide={current} urls={urls} highlight={highlight} />
-            </div>
-            <p className="mt-2 text-xs text-neutral-500">
-              Slide {slide} of {deck.slides.length} · use ← → to move · approximate reconstruction, click a finding to
-              highlight its shape
-            </p>
-          </section>
-
-          <aside className="flex max-h-[calc(100vh-11rem)] flex-col overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
-            <div className="border-b border-neutral-200 px-3.5 py-2.5 text-xs font-medium dark:border-neutral-800">
-              {slideFindings.length} finding{slideFindings.length === 1 ? "" : "s"} on this slide
-            </div>
-            <div className="flex-1 divide-y divide-neutral-100 overflow-y-auto dark:divide-neutral-900">
-              {slideFindings.length === 0 && (
-                <p className="p-8 text-center text-sm text-neutral-500">This slide is clean.</p>
-              )}
-              {slideFindings.map((f) => (
-                <FindingCard
-                  key={f.id}
-                  f={f}
-                  active={f.id === active}
-                  showSlide={false}
-                  onClick={() => setActive(f.id === active ? null : f.id)}
-                />
-              ))}
-            </div>
-          </aside>
-        </div>
-      )}
-    </main>
+            <Card className="flex max-h-[calc(100vh-9.5rem)] flex-col overflow-hidden p-0">
+              <div className="border-b border-zinc-100 px-4 py-3 text-[13px] font-medium dark:border-zinc-800">
+                {slideFindings.length} finding{slideFindings.length === 1 ? "" : "s"} on this slide
+              </div>
+              <div className="flex-1 divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-800">
+                {slideFindings.length === 0 && (
+                  <div className="grid flex-1 place-items-center p-10 text-center">
+                    <p className="text-sm text-zinc-400">This slide is clean.</p>
+                  </div>
+                )}
+                {slideFindings.map((f) => (
+                  <FindingCard
+                    key={f.id}
+                    f={f}
+                    active={f.id === active}
+                    showSlide={false}
+                    onClick={() => setActive(f.id === active ? null : f.id)}
+                  />
+                ))}
+              </div>
+            </Card>
+          </div>
+        )}
+      </main>
+    </>
   );
 }
 
 function AiButton({
   phase,
-  hasKey,
+  status,
   aiDone,
   images,
   label,
   onClick,
 }: {
   phase: Phase;
-  hasKey: boolean | null;
+  status: Status | null;
   aiDone: boolean;
   images: number;
   label: string;
   onClick: () => void;
 }) {
-  if (hasKey === false) {
+  if (status && !status.configured) {
     return (
       <span
-        title="Add ANTHROPIC_API_KEY to .env.local and restart the server"
-        className="cursor-not-allowed rounded-md border border-dashed border-neutral-300 px-3 py-1.5 text-xs text-neutral-400 dark:border-neutral-700"
+        title="Set AI_PROVIDER and AI_API_KEY in .env.local, then restart the server"
+        className="cursor-not-allowed rounded-lg border border-dashed border-zinc-300 px-3 py-1.5 text-[13px] text-zinc-400 dark:border-zinc-700"
       >
-        AI check needs an API key
+        AI check needs a key
       </span>
     );
   }
 
+  const running = phase === "ai";
+  const hint = status
+    ? `${status.label} · ${status.model} · ${images + 1} requests. Free tiers rate-limit; the run backs off and can be cancelled.`
+    : "";
   return (
-    <button
-      onClick={onClick}
-      disabled={phase === "ai" || hasKey === null}
-      className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-    >
-      {phase === "ai" ? label || "Running…" : aiDone ? `Re-run AI check (${images} images)` : `Deep check with AI (${images} images)`}
-    </button>
+    <Button variant="primary" onClick={onClick} disabled={running || !status} title={hint}>
+      {running && <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />}
+      {running ? label || "Running…" : aiDone ? `Re-run AI check` : `Deep check with AI (${images})`}
+    </Button>
   );
 }

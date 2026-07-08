@@ -1,11 +1,11 @@
 "use client";
 
-import type { AiFinding } from "./aiSchema";
+import type { AiFinding } from "./ai/schema";
 import { px96, type Deck, type Finding, type PicShape } from "./types";
 
-/** Opus 4.8 accepts up to 2576px on the long edge. Stay under it. */
-const MAX_EDGE = 2200;
-const JPEG_QUALITY = 0.9;
+/** Free-tier vision models bill and choke on big images. 1400px reads UI text fine. */
+const MAX_EDGE = 1400;
+const JPEG_QUALITY = 0.85;
 
 let seq = 0;
 const toFinding = (f: AiFinding, source: "ai-text" | "ai-image", shapeIds?: string[]): Finding => ({
@@ -31,12 +31,13 @@ export function slideTexts(deck: Deck) {
     .filter((s) => s.texts.length > 0);
 }
 
-export async function analyzeText(deck: Deck): Promise<Finding[]> {
+export async function analyzeText(deck: Deck, signal?: AbortSignal): Promise<Finding[]> {
   const slides = slideTexts(deck);
   if (!slides.length) return [];
   const res = await fetch("/api/analyze-text", {
     method: "POST",
     headers: { "content-type": "application/json" },
+    signal,
     body: JSON.stringify({ slides }),
   });
   const json = (await res.json()) as { findings?: AiFinding[]; error?: string };
@@ -45,20 +46,29 @@ export async function analyzeText(deck: Deck): Promise<Finding[]> {
 }
 
 export interface ImageJob {
+  /** representative slide, used for prompt context */
   slide: number;
   pic: PicShape;
   blob: Blob;
   slideText: string;
+  /** every place this exact image (same file, same crop) is used */
+  uses: { slide: number; shapeId: string }[];
 }
 
-/** Images worth spending vision tokens on: big enough on-slide to carry readable copy. */
+/**
+ * Images worth spending vision tokens on: big enough on-slide to carry readable
+ * copy. Deduplicated by file + crop — a logo reused on 30 slides is one request,
+ * and any typo found in it is reported on all 30. Free tiers rate-limit hard.
+ */
 export function selectImageJobs(deck: Deck, minAreaPct = 2): ImageJob[] {
-  const jobs: ImageJob[] = [];
   const slideArea = deck.widthEmu * deck.heightEmu;
+  const byKey = new Map<string, ImageJob>();
+
   for (const slide of deck.slides) {
     const slideText = slide.shapes
       .flatMap((sh) => (sh.kind === "text" ? sh.paragraphs.map((p) => p.text) : []))
       .join("\n");
+
     for (const sh of slide.shapes) {
       if (sh.kind !== "pic") continue;
       const info = deck.media.get(sh.media);
@@ -66,16 +76,22 @@ export function selectImageJobs(deck: Deck, minAreaPct = 2): ImageJob[] {
       if (!info || !blob || info.format === "svg" || info.format === "unknown") continue;
       if (info.width < 300) continue;
       if ((sh.rect.w * sh.rect.h) / slideArea < minAreaPct / 100) continue;
-      jobs.push({ slide: slide.index, pic: sh, blob, slideText });
+
+      const crop = [sh.crop.l, sh.crop.t, sh.crop.r, sh.crop.b].map((v) => v.toFixed(3)).join(",");
+      const key = `${sh.media}|${crop}`;
+      const existing = byKey.get(key);
+      if (existing) existing.uses.push({ slide: slide.index, shapeId: sh.id });
+      else byKey.set(key, { slide: slide.index, pic: sh, blob, slideText, uses: [{ slide: slide.index, shapeId: sh.id }] });
     }
   }
-  return jobs;
+  return [...byKey.values()];
 }
 
 export async function analyzeImages(
   jobs: ImageJob[],
   onProgress: (done: number, total: number) => void,
-  concurrency = 3,
+  // Free tiers cap requests per minute. Two in flight keeps the retry budget intact.
+  concurrency = 2,
   signal?: AbortSignal,
 ): Promise<Finding[]> {
   const out: Finding[] = [];
@@ -101,7 +117,9 @@ export async function analyzeImages(
           }),
         });
         const json = (await res.json()) as { findings?: AiFinding[] };
-        for (const f of json.findings ?? []) out.push(toFinding(f, "ai-image", [job.pic.id]));
+        // A typo inside a reused image exists on every slide that shows it.
+        for (const f of json.findings ?? [])
+          for (const use of job.uses) out.push(toFinding({ ...f, slide: use.slide }, "ai-image", [use.shapeId]));
       } catch {
         // One bad image must not abort the run.
       }

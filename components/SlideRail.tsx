@@ -2,13 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { SlidePreview } from "./SlidePreview";
+import { TONE } from "./ui";
 import type { Deck, Finding, Severity } from "@/lib/types";
-
-const DOT: Record<Severity, string> = {
-  error: "bg-rose-500",
-  warn: "bg-amber-500",
-  info: "bg-sky-500",
-};
 
 export function SlideRail({
   deck,
@@ -24,15 +19,9 @@ export function SlideRail({
   onPick: (n: number) => void;
 }) {
   return (
-    <nav className="flex max-h-[calc(100vh-11rem)] flex-col gap-1.5 overflow-y-auto pr-1">
+    <nav className="flex max-h-[calc(100vh-9.5rem)] flex-col gap-2 overflow-y-auto pr-1">
       {deck.slides.map((s) => (
-        <Thumb
-          key={s.index}
-          active={s.index === current}
-          count={counts.get(s.index)}
-          onClick={() => onPick(s.index)}
-          label={s.index}
-        >
+        <Thumb key={s.index} active={s.index === current} count={counts.get(s.index)} label={s.index} onClick={() => onPick(s.index)}>
           <SlidePreview deck={deck} slide={s} urls={urls} variant="thumb" />
         </Thumb>
       ))}
@@ -77,29 +66,37 @@ function Thumb({
     if (active) ref.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
+  const worst: Severity | null = count?.error ? "error" : count?.warn ? "warn" : count?.info ? "info" : null;
   const total = count ? count.error + count.warn + count.info : 0;
 
   return (
     <button
       ref={ref}
       onClick={onClick}
-      className={`group relative shrink-0 overflow-hidden rounded-md border text-left transition ${
+      className={`group relative shrink-0 overflow-hidden rounded-lg border bg-white transition dark:bg-zinc-900 ${
         active
-          ? "border-neutral-900 ring-2 ring-neutral-900 dark:border-white dark:ring-white"
-          : "border-neutral-200 hover:border-neutral-400 dark:border-neutral-800"
+          ? "border-indigo-500 ring-2 ring-indigo-500/30"
+          : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
       }`}
     >
       <div className="aspect-video w-full bg-white">{seen ? children : null}</div>
-      <div className="flex items-center justify-between gap-1 px-1.5 py-1 text-[11px]">
-        <span className={active ? "font-semibold" : "text-neutral-500"}>{label}</span>
-        {total > 0 && (
-          <span className="flex items-center gap-0.5">
-            {(["error", "warn", "info"] as const).map((s) =>
-              count![s] ? <span key={s} className={`h-1.5 w-1.5 rounded-full ${DOT[s]}`} /> : null,
-            )}
-          </span>
-        )}
-      </div>
+
+      <span
+        className={`absolute left-1 top-1 rounded px-1 py-px text-[10px] font-semibold tabular-nums backdrop-blur ${
+          active ? "bg-indigo-600 text-white" : "bg-black/45 text-white"
+        }`}
+      >
+        {label}
+      </span>
+
+      {worst && (
+        <span className={`absolute right-1 top-1 flex items-center gap-0.5 rounded px-1 py-px text-[10px] font-semibold text-white backdrop-blur ${
+          worst === "error" ? "bg-rose-500/90" : worst === "warn" ? "bg-amber-500/90" : "bg-sky-500/90"
+        }`}>
+          {total}
+        </span>
+      )}
+      {worst && <span className={`absolute inset-x-0 bottom-0 h-0.5 ${TONE[worst].bar}`} />}
     </button>
   );
 }

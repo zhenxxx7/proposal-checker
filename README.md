@@ -14,9 +14,10 @@ Built for checking client proposals before they are submitted.
 The `.pptx` is unzipped and parsed *in your browser*. Nothing is uploaded. Runs in
 under a second on a 143MB, 56-slide deck.
 
-**2. AI deep check — opt-in, costs tokens.**
-Sends slide text and downscaled copies of the mockup images to Claude Opus 4.8.
-Reads the text rendered inside each image and proofreads the whole deck in context.
+**2. AI deep check — opt-in, free providers.**
+Sends slide text and downscaled copies of the mockup images to any
+OpenAI-compatible endpoint. Reads the text rendered inside each image and
+proofreads the whole deck in context.
 
 The rule pass is the default. The AI pass is a button.
 
@@ -89,8 +90,11 @@ at a time), the reconstructed slide, and the findings on it. Clicking a finding 
 the exact shape. `←` / `→` walk the deck.
 
 Search filters the list; it never changes the verdict or the counters. Every fix
-suggestion has a one-click **copy**. The AI button disables itself with a reason when no
-API key is configured, instead of failing on click.
+suggestion has a one-click **copy**. Light and dark themes, remembered. The AI button
+disables itself with a reason when no provider is configured, instead of failing on click.
+
+An AI run on an image-heavy deck is 60–100 requests, so it is **cancellable** — stopping
+keeps every finding collected up to that point.
 
 ---
 
@@ -101,11 +105,31 @@ npm install
 npm run dev            # http://localhost:3000
 ```
 
-Rule checks need no configuration. For the AI pass:
+Rule checks need no configuration. For the AI pass, copy `.env.example` to
+`.env.local` and pick a provider:
+
+| `AI_PROVIDER` | Cost | Deployable | Privacy |
+|---|---|---|---|
+| `gemini` *(default)* | free tier | yes | free-tier data may be used for training |
+| `ollama` | free, local | no | deck never leaves the machine |
+| `openrouter` | free `:free` models | yes | depends on the model |
+| `custom` | — | — | set `AI_BASE_URL` to any OpenAI-compatible `/v1` |
 
 ```bash
-cp .env.example .env.local   # add your ANTHROPIC_API_KEY
+cp .env.example .env.local
+# AI_PROVIDER=gemini
+# AI_API_KEY=...            # https://aistudio.google.com/apikey
 ```
+
+**If the deck is under NDA, use `ollama`.** Gemini's free tier permits Google to
+train on submitted data, and mockups are exactly the thing you would not want
+leaving the building.
+
+All four speak the same OpenAI chat-completions shape, so the whole AI layer is
+one `fetch` and a base URL — switching provider is one env var. The client
+negotiates `response_format` once (`json_schema` → `json_object` → prompt-only),
+caches what worked, strips markdown fences, retries `429`s with backoff, and
+discards findings that do not match the schema.
 
 ### Headless CLI
 
@@ -132,18 +156,41 @@ npm run verify:ui -- "proposal.pptx"
 Uses `puppeteer-core` against an already-installed Chrome or Edge; it does not download
 a browser. Writes `scripts/__summary.png`, `__slides.png`, `__search.png` (gitignored).
 
+### AI verification without a key
+
+`scripts/mock-ai.mjs` is a deliberately hostile OpenAI-compatible endpoint: it
+rejects `json_schema`, rate-limits the first image, wraps replies in markdown
+fences, and returns a finding with an invalid severity. It proves the AI layer's
+fallbacks without spending a quota.
+
+```bash
+# terminal 1
+npm run mock:ai
+
+# terminal 2
+AI_PROVIDER=custom AI_BASE_URL=http://localhost:11435/v1 AI_MODEL=mock npm run dev
+
+# terminal 3
+npm run verify:ai
+npm run verify:ui -- "proposal.pptx"   # drives the AI button too
+```
+
 ---
 
 ## Deploying
 
-Deploys to Vercel as-is. Set `ANTHROPIC_API_KEY` as an environment variable —
-it is read server-side only and never reaches the browser.
+Deploys to Vercel as-is. Set `AI_PROVIDER` and `AI_API_KEY` as environment
+variables — they are read server-side only and never reach the browser.
+(`ollama` is the exception: it targets `localhost` and cannot run on Vercel.)
 
 The deck itself is never uploaded. Only the AI pass sends data, and only:
 
 - the extracted slide text, in one request;
-- each qualifying image, re-encoded to JPEG at ≤2200px on the long edge, one per
+- each qualifying image, re-encoded to JPEG at ≤1400px on the long edge, one per
   request (well under Vercel's 4.5MB body limit).
+
+Images are deduplicated by file + crop before being sent: a logo reused on 30
+slides is one request, and a typo found inside it is reported on all 30.
 
 Both API routes set `maxDuration = 300`.
 
@@ -157,5 +204,6 @@ Both API routes set `maxDuration = 300`.
   from the OOXML geometry so a finding can point at the offending element. Fills,
   effects, theme fonts, and text autofit are not reproduced.
 - **Image selection for the AI pass**: pictures at least 300px wide whose on-slide
-  area is ≥2% of the slide. A 56-slide deck with 318 pictures yields ~30 images.
+  area is ≥2% of the slide, deduplicated by file + crop. Two requests run in
+  flight at a time — free tiers cap requests per minute.
 - Charts, SmartArt, and tables contribute their text but not their geometry.
