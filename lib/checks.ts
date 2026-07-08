@@ -733,7 +733,10 @@ function geometryChecks(deck: Deck): Finding[] {
 
       const overR = x + w - W;
       const overB = y + h - H;
-      if (sh.kind === "text" && (overR > tol || overB > tol || x < -tol || y < -tol)) {
+      // Only real text can be "cut off". Decorative rectangles (banners, footer
+      // bars) routinely bleed past the edge by design — don't flag those.
+      const hasText = sh.kind === "text" && sh.paragraphs.some((p) => p.text.trim());
+      if (hasText && (overR > tol || overB > tol || x < -tol || y < -tol)) {
         const dirs = [
           overR > tol ? `${inches(overR).toFixed(2)}in past the right edge` : "",
           overB > tol ? `${inches(overB).toFixed(2)}in past the bottom` : "",

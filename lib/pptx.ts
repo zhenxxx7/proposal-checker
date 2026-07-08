@@ -199,12 +199,19 @@ function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextS
       paras.push({ text, sizes, color, align, bold });
     }
   }
-  if (!paras.length) return null;
+
+  const spPr = firstNS(el, NS_P, "spPr");
+  const fill = resolveFill(spPr, scheme);
+  const line = resolveLine(spPr, scheme);
+
+  // Keep text-free shapes only when they carry visible paint — those are the
+  // decorative rectangles (footer bars, banners) that make a slide look right.
+  // Drop genuinely empty shapes so they add no noise.
+  if (!paras.length && !fill && !line) return null;
 
   const rect = rectOf(el, tf) ?? { x: 0, y: 0, w: 0, h: 0 };
   const cNvPr = firstNS(el, NS_P, "cNvPr");
   const ph = firstNS(el, NS_P, "ph");
-  const spPr = firstNS(el, NS_P, "spPr");
   const bodyPr = firstNS(el, NS_A, "bodyPr");
   const xfrm = spPr ? childNS(spPr, NS_A, "xfrm") : null;
 
@@ -216,8 +223,8 @@ function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextS
     rot: num(xfrm?.getAttribute("rot"), 0) / 60000,
     paragraphs: paras,
     placeholder: ph?.getAttribute("type") ?? (ph ? "body" : undefined),
-    fill: resolveFill(spPr, scheme),
-    line: resolveLine(spPr, scheme),
+    fill,
+    line,
     anchor: bodyPr ? ANCHOR[bodyPr.getAttribute("anchor") ?? ""] : undefined,
   };
 }
