@@ -34,6 +34,8 @@ export type Code =
   | "term.spelling-variant"
   | "style.mixed-quotes"
   | "style.title-size"
+  | "style.font-drift"
+  | "text.low-contrast"
   | "img.upscaled"
   | "img.low-dpi"
   | "img.distorted"
@@ -110,14 +112,26 @@ export interface PicShape {
 export type Align = "left" | "center" | "right" | "justify";
 export type Anchor = "top" | "center" | "bottom";
 
+/** One styled run of text. Theme font references are resolved at parse time. */
+export interface Run {
+  text: string;
+  /** points */
+  size?: number;
+  /** CSS colour */
+  color?: string;
+  font?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+}
+
 export interface Para {
+  /** concatenated run text — what the checks and the AI pass read */
   text: string;
   /** run font sizes in points */
   sizes: number[];
-  /** first run's colour, CSS string */
-  color?: string;
+  runs: Run[];
   align?: Align;
-  bold?: boolean;
 }
 
 export interface TextShape {

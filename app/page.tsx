@@ -8,6 +8,7 @@ import { SlideRail, countBySlide } from "@/components/SlideRail";
 import { Summary } from "@/components/Summary";
 import { Button, Card, SearchInput, Tabs, ThemeToggle } from "@/components/ui";
 import { analyzeImages, analyzeText, selectImageJobs } from "@/lib/aiClient";
+import { collectFamilies, googleFontsUrl } from "@/lib/fonts";
 import { runRuleChecks } from "@/lib/checks";
 import { groupFindings } from "@/lib/groups";
 import { parsePptx } from "@/lib/pptx";
@@ -43,6 +44,23 @@ export default function Page() {
 
   // Revokes the *previous* map when `urls` is replaced, and everything on unmount.
   useEffect(() => () => urls.forEach((u) => URL.revokeObjectURL(u)), [urls]);
+
+  // Load the deck's webfonts (Google-exported decks use Google Fonts) so the
+  // preview renders in the real faces. Unknown fonts fall back silently.
+  useEffect(() => {
+    if (!deck) return;
+    const names = new Set<string>();
+    for (const s of deck.slides)
+      for (const sh of s.shapes)
+        if (sh.kind === "text")
+          for (const p of sh.paragraphs) for (const r of p.runs) if (r.font) names.add(r.font);
+    const url = googleFontsUrl(collectFamilies(names));
+    if (!url || document.querySelector(`link[href="${url}"]`)) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = url;
+    document.head.appendChild(link);
+  }, [deck]);
 
   useEffect(() => {
     fetch("/api/status")

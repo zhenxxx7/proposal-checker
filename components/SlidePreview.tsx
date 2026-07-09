@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizeFont } from "@/lib/fonts";
 import { EMU_PER_INCH, EMU_PER_PT, type Deck, type Fill, type Slide } from "@/lib/types";
 
 interface Props {
@@ -78,6 +79,9 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
         const pt = sh.paragraphs.flatMap((p) => p.sizes)[0] ?? 14;
         const justify =
           sh.anchor === "center" ? "center" : sh.anchor === "bottom" ? "flex-end" : "flex-start";
+        // pt → % of slide width; the container-query unit keeps thumbs and the
+        // full view proportional to the real deck.
+        const cqw = (points: number) => `${((points * EMU_PER_PT) / W) * 100}cqw`;
 
         return (
           <div
@@ -89,24 +93,33 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
               ...box,
               justifyContent: justify,
               background: fillCss(sh.fill),
-              border: sh.line ? `${Math.max(1, sh.line.width / EMU_PER_INCH * 96)}px ${sh.line.dash ? "dashed" : "solid"} ${sh.line.color}` : undefined,
+              border: sh.line ? `${Math.max(1, (sh.line.width / EMU_PER_INCH) * 96)}px ${sh.line.dash ? "dashed" : "solid"} ${sh.line.color}` : undefined,
               borderRadius: sh.line || sh.fill ? "2cqw" : undefined,
               transform: sh.rot ? `rotate(${sh.rot}deg)` : undefined,
               padding: sh.fill || sh.line ? "1cqw 1.5cqw" : undefined,
-              fontSize: `${((pt * EMU_PER_PT) / W) * 100}cqw`,
+              fontSize: cqw(pt),
             }}
           >
             {sh.paragraphs.map((p, i) => (
-              <p
-                key={i}
-                className="whitespace-pre-wrap"
-                style={{
-                  color: p.color ?? "#111827",
-                  textAlign: p.align,
-                  fontWeight: p.bold ? 700 : undefined,
-                }}
-              >
-                {p.text}
+              <p key={i} className="whitespace-pre-wrap" style={{ textAlign: p.align }}>
+                {p.runs.map((r, j) => {
+                  const spec = r.font ? normalizeFont(r.font) : null;
+                  return (
+                    <span
+                      key={j}
+                      style={{
+                        color: r.color ?? "#111827",
+                        fontSize: r.size !== undefined && r.size !== pt ? cqw(r.size) : undefined,
+                        fontFamily: spec ? `"${spec.family}", ui-sans-serif, sans-serif` : undefined,
+                        fontWeight: r.bold ? 700 : spec && spec.weight !== 400 ? spec.weight : undefined,
+                        fontStyle: r.italic ? "italic" : undefined,
+                        textDecoration: r.underline ? "underline" : undefined,
+                      }}
+                    >
+                      {r.text}
+                    </span>
+                  );
+                })}
               </p>
             ))}
           </div>

@@ -3,6 +3,7 @@ import {
   inches,
   type Code,
   type Deck,
+  type Fill,
   type Finding,
   type PicShape,
   type Rect,
@@ -28,6 +29,8 @@ export function runRuleChecks(deck: Deck): Finding[] {
     ...deckTextConsistency(deck),
     ...deckImageConsistency(deck),
     ...duplicateSlides(deck),
+    ...fontDrift(deck),
+    ...lowContrastText(deck),
   ];
 }
 
@@ -702,6 +705,157 @@ function duplicateSlides(deck: Deck): Finding[] {
         relatedSlides: rest,
       }),
     );
+  }
+  return out;
+}
+
+// ================================================================ font drift
+
+/**
+ * A deck should use one font family (plus deliberate accents). Calibri or Arial
+ * creeping into an Open Sans deck usually means text pasted from elsewhere and
+ * never restyled — weight by characters so a stray label doesn't dominate.
+ */
+function fontDrift(deck: Deck): Finding[] {
+  const stripWeight = (f: string) =>
+    f.replace(/\s+(thin|hairline|extra\s*light|light|regular|medium|semi\s*bold|demi\s*bold|bold|extra\s*bold|black|heavy)$/i, "").trim();
+
+  const chars = new Map<string, number>();
+  const slidesOf = new Map<string, Set<number>>();
+  for (const slide of deck.slides) {
+    for (const sh of slide.shapes) {
+      if (!isText(sh)) continue;
+      for (const p of sh.paragraphs) {
+        for (const r of p.runs) {
+          if (!r.font || !r.text.trim()) continue;
+          const fam = stripWeight(r.font);
+          chars.set(fam, (chars.get(fam) ?? 0) + r.text.length);
+          (slidesOf.get(fam) ?? slidesOf.set(fam, new Set()).get(fam)!).add(slide.index);
+        }
+      }
+    }
+  }
+  if (chars.size < 2) return [];
+
+  const total = [...chars.values()].reduce((a, b) => a + b, 0);
+  const ranked = [...chars.entries()].sort((a, b) => b[1] - a[1]);
+  const [domFam, domChars] = ranked[0];
+  if (domChars / total < 0.5) return []; // no dominant face → deliberate multi-font design
+
+  const strays = ranked.slice(1).filter(([, n]) => n / total < 0.2 && n >= 40);
+  if (!strays.length) return [];
+
+  const detail = strays
+    .map(([fam]) => {
+      const s = [...(slidesOf.get(fam) ?? [])].sort((a, b) => a - b);
+      return `${fam} on slide${s.length > 1 ? "s" : ""} ${s.slice(0, 10).join(", ")}${s.length > 10 ? ` +${s.length - 10}` : ""}`;
+    })
+    .join("; ");
+
+  return [
+    mk({
+      code: "style.font-drift",
+      slide: [...(slidesOf.get(strays[0][0]) ?? [1])].sort((a, b) => a - b)[0],
+      severity: "info",
+      category: "consistency",
+      title: `${strays.length + 1} fonts in one deck — ${domFam} plus ${strays.map(([f]) => f).join(", ")}`,
+      detail: `Most text is ${domFam} (${Math.round((domChars / total) * 100)}%), but ${detail}. Usually text pasted in and never restyled.`,
+      suggestion: `Restyle the stray text to ${domFam}.`,
+      relatedSlides: [...new Set(strays.flatMap(([f]) => [...(slidesOf.get(f) ?? [])]))].sort((a, b) => a - b),
+    }),
+  ];
+}
+
+// ============================================================= text contrast
+
+/**
+ * White text on a white background is invisible in the export even though it
+ * looks fine in the editor's selection view. Judge only what we can know: the
+ * shape's own solid fill, or a solid/gradient slide background with no picture
+ * behind the text.
+ */
+function lowContrastText(deck: Deck): Finding[] {
+  const out: Finding[] = [];
+
+  const lum = (css: string): number | null => {
+    const m = /^#([0-9a-f]{6})$/i.exec(css.trim());
+    if (!m) return null; // rgba — translucent, too uncertain to judge
+    const [r, g, b] = [0, 2, 4].map((i) => {
+      const v = parseInt(m[1].slice(i, i + 2), 16) / 255;
+      return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+
+  /** Every candidate colour a fill can present. A gradient contributes all its stops. */
+  const fillColors = (f: Fill | undefined): string[] => {
+    if (!f) return [];
+    if (f.type === "solid") return [f.color];
+    return f.css.match(/#[0-9a-f]{6}/gi) ?? [];
+  };
+
+  const overlapFrac = (a: Rect, b: Rect) => {
+    const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+    const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+    return (ix * iy) / Math.max(1, a.w * a.h);
+  };
+
+  for (const slide of deck.slides) {
+    const slideBg = fillColors(slide.background).length ? fillColors(slide.background) : ["#ffffff"];
+
+    for (let i = 0; i < slide.shapes.length; i++) {
+      const sh = slide.shapes[i];
+      if (!isText(sh)) continue;
+      // Parked off-canvas → never renders; already reported by geometryChecks.
+      const { x, y, w, h } = sh.rect;
+      if (x + w <= 0 || y + h <= 0 || x >= deck.widthEmu || y >= deck.heightEmu) continue;
+
+      // What is actually behind this text? Walk shapes *below* it in z-order:
+      // the topmost filled shape or picture covering most of the text wins.
+      // A footer caption usually sits on a decorative bar, not the slide bg.
+      let bg: string[] | null = fillColors(sh.fill).length ? fillColors(sh.fill) : null;
+      if (!bg) {
+        for (let j = i - 1; j >= 0 && !bg; j--) {
+          const under = slide.shapes[j];
+          if (overlapFrac(sh.rect, under.rect) < 0.6) continue;
+          if (under.kind === "pic") bg = []; // text over a photo — can't judge
+          else if (fillColors(under.fill).length) bg = fillColors(under.fill);
+        }
+      }
+      if (bg === null) bg = slideBg;
+      if (!bg.length) continue; // photo underneath
+
+      const bgLums = bg.map(lum).filter((l): l is number => l !== null);
+      if (!bgLums.length) continue;
+
+      for (const p of sh.paragraphs) {
+        const bad = p.runs.find((r) => {
+          if (r.text.trim().length < 3) return false;
+          const l = lum(r.color ?? "#111827");
+          // Flag only when the text fails against EVERY stop of the background —
+          // a gradient's dark end can rescue text its light end would swallow.
+          return l !== null && Math.max(...bgLums.map((b) => ratio(l, b))) < 1.6;
+        });
+        if (!bad) continue;
+        const l = lum(bad.color ?? "#111827")!;
+        const best = Math.max(...bgLums.map((b) => ratio(l, b)));
+        out.push(
+          mk({
+            code: "text.low-contrast",
+            slide: slide.index,
+            severity: "warn",
+            category: "typo",
+            title: `Text nearly invisible on slide ${slide.index}`,
+            detail: `“${bad.text.trim().slice(0, 50)}” is ${bad.color ?? "#111827"} on a ${bg[0]} background — contrast ${best.toFixed(2)}:1. It will not survive a projector.`,
+            quote: bad.text.trim().slice(0, 80),
+            suggestion: "Darken the text or lighten the background.",
+            shapeIds: [sh.id],
+          }),
+        );
+        break; // one finding per shape is enough
+      }
+    }
   }
   return out;
 }

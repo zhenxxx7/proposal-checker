@@ -63,6 +63,13 @@ const DEFS: Def[] = [
     why: "Grammar and wording flagged by the AI pass.",
   },
   {
+    key: "readability",
+    icon: "👁",
+    codes: ["text.low-contrast"],
+    title: (n) => plural(n, "Text is nearly invisible", "{n} pieces of text are nearly invisible"),
+    why: "Text and background colours almost match — unreadable when projected.",
+  },
+  {
     key: "duplicate",
     icon: "⧉",
     codes: ["slide.duplicate"],
@@ -121,7 +128,7 @@ const DEFS: Def[] = [
   {
     key: "cleanup",
     icon: "🧹",
-    codes: ["geo.parked", "img.oversized", "style.mixed-quotes", "style.title-size", "term.case-styling"],
+    codes: ["geo.parked", "img.oversized", "style.mixed-quotes", "style.title-size", "style.font-drift", "term.case-styling"],
     title: (n) => plural(n, "A housekeeping note", "{n} housekeeping notes"),
     why: "Hidden elements, file bloat, and style drift. Nothing urgent.",
   },

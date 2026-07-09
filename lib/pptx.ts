@@ -1,7 +1,7 @@
 import { unzipSync, strFromU8 } from "fflate";
 import { readImageHeader } from "./imageHeader";
 import { parseScheme, resolveBackground, resolveColor, resolveFill, resolveLine, type Scheme } from "./color";
-import type { Align, Anchor, Crop, Deck, MediaInfo, Para, PicShape, Rect, Shape, Slide, TextShape } from "./types";
+import type { Align, Anchor, Crop, Deck, MediaInfo, Para, PicShape, Rect, Run, Shape, Slide, TextShape } from "./types";
 
 const NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -169,34 +169,34 @@ const ANCHOR: Record<string, Anchor> = { t: "top", ctr: "center", b: "bottom" };
 function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextShape | null {
   const paras: Para[] = [];
   for (const p of Array.from(el.getElementsByTagNameNS(NS_A, "p"))) {
-    let text = "";
-    const sizes: number[] = [];
-    let color: string | undefined;
-    let bold: boolean | undefined;
+    const runs: Run[] = [];
 
     for (const node of elementChildren(p)) {
       if (node.namespaceURI !== NS_A) continue;
       if (node.localName === "br") {
-        text += "\n";
+        runs.push({ text: "\n" });
       } else if (node.localName === "r" || node.localName === "fld") {
-        const t = firstNS(node, NS_A, "t");
-        if (t?.textContent) text += t.textContent;
+        const text = firstNS(node, NS_A, "t")?.textContent ?? "";
+        if (!text) continue;
         const rPr = firstNS(node, NS_A, "rPr");
         const sz = rPr?.getAttribute("sz");
-        if (sz) sizes.push(num(sz, 0) / 100);
-        // First coloured run sets the paragraph colour — good enough for a preview.
-        if (color === undefined) {
-          const fill = rPr ? childNS(rPr, NS_A, "solidFill") : null;
-          const c = resolveColor(fill, scheme);
-          if (c) color = c;
-        }
-        if (bold === undefined && rPr?.getAttribute("b") === "1") bold = true;
+        runs.push({
+          text,
+          size: sz ? num(sz, 0) / 100 : undefined,
+          color: resolveColor(rPr ? childNS(rPr, NS_A, "solidFill") : null, scheme) ?? undefined,
+          font: (rPr ? childNS(rPr, NS_A, "latin") : null)?.getAttribute("typeface") ?? undefined,
+          bold: rPr?.getAttribute("b") === "1" || undefined,
+          italic: rPr?.getAttribute("i") === "1" || undefined,
+          underline: (rPr?.getAttribute("u") ?? "none") !== "none" || undefined,
+        });
       }
     }
+
+    const text = runs.map((r) => r.text).join("");
     if (text.trim()) {
       const pPr = firstNS(p, NS_A, "pPr");
       const align = pPr ? ALIGN[pPr.getAttribute("algn") ?? ""] : undefined;
-      paras.push({ text, sizes, color, align, bold });
+      paras.push({ text, sizes: runs.map((r) => r.size).filter((s): s is number => s !== undefined), runs, align });
     }
   }
 
