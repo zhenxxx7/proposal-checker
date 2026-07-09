@@ -1,7 +1,17 @@
 import { unzipSync, strFromU8 } from "fflate";
 import { readImageHeader } from "./imageHeader";
-import { parseScheme, resolveBackground, resolveColor, resolveFill, resolveLine, type Scheme } from "./color";
-import type { Align, Anchor, Crop, Deck, MediaInfo, Para, PicShape, Rect, Run, Shape, Slide, TextShape } from "./types";
+import {
+  applyClrMap,
+  parseFontScheme,
+  parseScheme,
+  resolveBackground,
+  resolveColor,
+  resolveFill,
+  resolveLine,
+  type Scheme,
+  type ThemeFonts,
+} from "./color";
+import type { Align, Anchor, Crop, CxnShape, Deck, Fill, MediaInfo, Para, PicShape, Rect, Run, Shape, Slide, TextShape } from "./types";
 
 const NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -16,12 +26,20 @@ interface Transform {
 }
 const IDENTITY: Transform = { sx: 1, sy: 1, tx: 0, ty: 0 };
 
+/** Everything a shape needs to resolve colours and fonts against its master. */
+interface Ctx {
+  scheme: Scheme;
+  fonts: ThemeFonts;
+}
+
 export function parsePptx(buf: ArrayBuffer): Deck {
   const wanted = (name: string) =>
     name === "ppt/presentation.xml" ||
     name === "ppt/_rels/presentation.xml.rels" ||
-    name === "ppt/theme/theme1.xml" ||
+    name.startsWith("ppt/theme/") ||
     name.startsWith("ppt/media/") ||
+    /^ppt\/slide(Layout|Master)s\/[^/]+\.xml$/.test(name) ||
+    /^ppt\/slide(Layout|Master)s\/_rels\/[^/]+\.rels$/.test(name) ||
     /^ppt\/slides\/slide\d+\.xml$/.test(name) ||
     /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/.test(name);
 
@@ -53,7 +71,47 @@ export function parsePptx(buf: ArrayBuffer): Deck {
   const widthEmu = num(sldSz?.getAttribute("cx"), 9144000);
   const heightEmu = num(sldSz?.getAttribute("cy"), 6858000);
 
-  const scheme = parseScheme(files["ppt/theme/theme1.xml"] ? xml("ppt/theme/theme1.xml") : null);
+  // --- inheritance chain: slide → layout → master → theme --------------------
+  // Backgrounds, colour maps, and theme fonts live up the chain. Parse each
+  // layout/master/theme once and hand every slide its master's context.
+  const relsFor = (path: string): Map<string, string> => {
+    const dir = path.slice(0, path.lastIndexOf("/") + 1);
+    const rp = `${dir}_rels/${path.slice(path.lastIndexOf("/") + 1)}.rels`;
+    return files[rp] ? relMap(xml(rp), dir) : new Map();
+  };
+  const firstRelTo = (rels: Map<string, string>, contains: string) =>
+    [...rels.values()].find((t) => t.includes(contains));
+
+  const masterCache = new Map<string, { ctx: Ctx; bg?: Fill }>();
+  const masterOf = (masterPath: string) => {
+    let m = masterCache.get(masterPath);
+    if (!m) {
+      const doc = files[masterPath] ? xml(masterPath) : null;
+      const themePath = doc ? firstRelTo(relsFor(masterPath), "theme/") : undefined;
+      const themeDoc = themePath && files[themePath] ? xml(themePath) : null;
+      const clrMapEl = doc?.getElementsByTagNameNS(NS_P, "clrMap")[0] ?? null;
+      const scheme = applyClrMap(parseScheme(themeDoc), clrMapEl);
+      m = {
+        ctx: { scheme, fonts: parseFontScheme(themeDoc) },
+        bg: doc ? resolveBackground(doc, scheme) : undefined,
+      };
+      masterCache.set(masterPath, m);
+    }
+    return m;
+  };
+
+  const layoutCache = new Map<string, { master: { ctx: Ctx; bg?: Fill }; bg?: Fill }>();
+  const layoutOf = (layoutPath: string) => {
+    let l = layoutCache.get(layoutPath);
+    if (!l) {
+      const doc = files[layoutPath] ? xml(layoutPath) : null;
+      const masterPath = doc ? firstRelTo(relsFor(layoutPath), "slideMasters/") : undefined;
+      const master = masterOf(masterPath ?? "ppt/slideMasters/slideMaster1.xml");
+      l = { master, bg: doc ? resolveBackground(doc, master.ctx.scheme) : undefined };
+      layoutCache.set(layoutPath, l);
+    }
+    return l;
+  };
 
   const presRels = relMap(xml("ppt/_rels/presentation.xml.rels"), "ppt/");
   const sldIds = Array.from(pres.getElementsByTagNameNS(NS_P, "sldId"));
@@ -63,12 +121,19 @@ export function parsePptx(buf: ArrayBuffer): Deck {
 
   const slides: Slide[] = slidePaths.map((path, i) => {
     const doc = xml(path);
-    const relsPath = path.replace(/slides\/(slide\d+\.xml)$/, "slides/_rels/$1.rels");
-    const rels = files[relsPath] ? relMap(xml(relsPath), "ppt/slides/") : new Map<string, string>();
+    const rels = relsFor(path);
+    const layoutPath = firstRelTo(rels, "slideLayouts/");
+    const layout = layoutOf(layoutPath ?? "ppt/slideLayouts/slideLayout1.xml");
+    const ctx = layout.master.ctx;
+
     const tree = doc.getElementsByTagNameNS(NS_P, "spTree")[0];
     const shapes: Shape[] = [];
-    if (tree) walk(tree, IDENTITY, rels, shapes, `s${i + 1}`, scheme);
-    return { index: i + 1, shapes, background: resolveBackground(doc, scheme) };
+    if (tree) walk(tree, IDENTITY, rels, shapes, `s${i + 1}`, ctx);
+    return {
+      index: i + 1,
+      shapes,
+      background: resolveBackground(doc, ctx.scheme) ?? layout.bg ?? layout.master.bg,
+    };
   });
 
   return { widthEmu, heightEmu, slides, media, blobs };
@@ -82,7 +147,7 @@ function walk(
   rels: Map<string, string>,
   out: Shape[],
   idPrefix: string,
-  scheme: Scheme,
+  ctx: Ctx,
 ) {
   let n = 0;
   for (const child of elementChildren(parent)) {
@@ -91,7 +156,7 @@ function walk(
     switch (child.localName) {
       case "grpSp": {
         const g = groupTransform(child, tf);
-        walk(child, g, rels, out, id, scheme);
+        walk(child, g, rels, out, id, ctx);
         break;
       }
       case "pic": {
@@ -99,15 +164,39 @@ function walk(
         if (pic) out.push(pic);
         break;
       }
-      case "sp":
-      case "graphicFrame":
       case "cxnSp": {
-        const t = readText(child, tf, id, scheme);
+        // Connectors are lines. Fed through readText they'd render as boxes.
+        const c = readCxn(child, tf, id, ctx.scheme);
+        if (c) out.push(c);
+        break;
+      }
+      case "sp":
+      case "graphicFrame": {
+        const t = readText(child, tf, id, ctx);
         if (t) out.push(t);
         break;
       }
     }
   }
+}
+
+function readCxn(el: Element, tf: Transform, id: string, scheme: Scheme): CxnShape | null {
+  const spPr = firstNS(el, NS_P, "spPr");
+  const line = resolveLine(spPr, scheme);
+  if (!line) return null;
+  const rect = rectOf(el, tf);
+  if (!rect) return null;
+  const xfrm = spPr ? childNS(spPr, NS_A, "xfrm") : null;
+  return {
+    kind: "cxn",
+    id,
+    rect,
+    color: line.color,
+    width: line.width,
+    dash: line.dash,
+    flipH: xfrm?.getAttribute("flipH") === "1",
+    flipV: xfrm?.getAttribute("flipV") === "1",
+  };
 }
 
 /** A group remaps child coords: global = off + (local - chOff) * (ext / chExt). */
@@ -166,7 +255,16 @@ function readPic(el: Element, tf: Transform, rels: Map<string, string>, id: stri
 const ALIGN: Record<string, Align> = { l: "left", ctr: "center", r: "right", just: "justify" };
 const ANCHOR: Record<string, Anchor> = { t: "top", ctr: "center", b: "bottom" };
 
-function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextShape | null {
+function readText(el: Element, tf: Transform, id: string, ctx: Ctx): TextShape | null {
+  const { scheme, fonts } = ctx;
+  // "+mj-lt"/"+mn-lt" are theme font references, not typeface names.
+  const themeFace = (face: string | null | undefined): string | undefined => {
+    if (!face) return undefined;
+    if (face.startsWith("+mj")) return fonts.major;
+    if (face.startsWith("+mn")) return fonts.minor;
+    return face;
+  };
+
   const paras: Para[] = [];
   for (const p of Array.from(el.getElementsByTagNameNS(NS_A, "p"))) {
     const runs: Run[] = [];
@@ -184,7 +282,7 @@ function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextS
           text,
           size: sz ? num(sz, 0) / 100 : undefined,
           color: resolveColor(rPr ? childNS(rPr, NS_A, "solidFill") : null, scheme) ?? undefined,
-          font: (rPr ? childNS(rPr, NS_A, "latin") : null)?.getAttribute("typeface") ?? undefined,
+          font: themeFace((rPr ? childNS(rPr, NS_A, "latin") : null)?.getAttribute("typeface")),
           bold: rPr?.getAttribute("b") === "1" || undefined,
           italic: rPr?.getAttribute("i") === "1" || undefined,
           underline: (rPr?.getAttribute("u") ?? "none") !== "none" || undefined,
@@ -196,13 +294,46 @@ function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextS
     if (text.trim()) {
       const pPr = firstNS(p, NS_A, "pPr");
       const align = pPr ? ALIGN[pPr.getAttribute("algn") ?? ""] : undefined;
-      paras.push({ text, sizes: runs.map((r) => r.size).filter((s): s is number => s !== undefined), runs, align });
+
+      // Bullet: an explicit buChar wins; buNone/absent means none.
+      const buChar = pPr ? childNS(pPr, NS_A, "buChar")?.getAttribute("char") : null;
+      const marL = num(pPr?.getAttribute("marL"), 0);
+
+      // Line spacing: percent of single spacing, or absolute points.
+      let lineSpacing: number | undefined;
+      const lnSpc = pPr ? childNS(pPr, NS_A, "lnSpc") : null;
+      const pct = lnSpc ? childNS(lnSpc, NS_A, "spcPct")?.getAttribute("val") : null;
+      const pts = lnSpc ? childNS(lnSpc, NS_A, "spcPts")?.getAttribute("val") : null;
+      if (pct) lineSpacing = num(pct, 100000) / 100000;
+      else if (pts) {
+        const firstSize = runs.find((r) => r.size)?.size ?? 14;
+        lineSpacing = num(pts, 0) / 100 / firstSize;
+      }
+
+      paras.push({
+        text,
+        sizes: runs.map((r) => r.size).filter((s): s is number => s !== undefined),
+        runs,
+        align,
+        bullet: buChar ?? undefined,
+        marL: marL > 0 ? marL : undefined,
+        lineSpacing,
+      });
     }
   }
 
   const spPr = firstNS(el, NS_P, "spPr");
   const fill = resolveFill(spPr, scheme);
   const line = resolveLine(spPr, scheme);
+
+  // Preset geometry. roundRect's corner radius comes from its adj guide,
+  // as a fraction (val/100000) of the shorter side; PowerPoint's default is 16.67%.
+  const prstGeom = spPr ? childNS(spPr, NS_A, "prstGeom") : null;
+  const geom = prstGeom?.getAttribute("prst") ?? undefined;
+
+  // A connector authored as <p:sp> would box-render its stroke; drop it rather
+  // than draw a rectangle where the deck has a line.
+  if (!paras.length && geom && /connector|^line$/i.test(geom)) return null;
 
   // Keep text-free shapes only when they carry visible paint — those are the
   // decorative rectangles (footer bars, banners) that make a slide look right.
@@ -214,6 +345,20 @@ function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextS
   const ph = firstNS(el, NS_P, "ph");
   const bodyPr = firstNS(el, NS_A, "bodyPr");
   const xfrm = spPr ? childNS(spPr, NS_A, "xfrm") : null;
+  let radius: number | undefined;
+  if (geom === "roundRect") {
+    const gd = prstGeom ? firstNS(prstGeom, NS_A, "gd") : null;
+    const m = /val (\d+)/.exec(gd?.getAttribute("fmla") ?? "");
+    radius = m ? Number(m[1]) / 100000 : 0.16667;
+  }
+
+  // Text insets: PowerPoint defaults are 0.1in left/right, 0.05in top/bottom.
+  const insets: [number, number, number, number] = [
+    num(bodyPr?.getAttribute("lIns"), 91440),
+    num(bodyPr?.getAttribute("tIns"), 45720),
+    num(bodyPr?.getAttribute("rIns"), 91440),
+    num(bodyPr?.getAttribute("bIns"), 45720),
+  ];
 
   return {
     kind: "text",
@@ -226,6 +371,9 @@ function readText(el: Element, tf: Transform, id: string, scheme: Scheme): TextS
     fill,
     line,
     anchor: bodyPr ? ANCHOR[bodyPr.getAttribute("anchor") ?? ""] : undefined,
+    geom,
+    radius,
+    insets,
   };
 }
 

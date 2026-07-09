@@ -820,7 +820,7 @@ function lowContrastText(deck: Deck): Finding[] {
           const under = slide.shapes[j];
           if (overlapFrac(sh.rect, under.rect) < 0.6) continue;
           if (under.kind === "pic") bg = []; // text over a photo — can't judge
-          else if (fillColors(under.fill).length) bg = fillColors(under.fill);
+          else if (under.kind === "text" && fillColors(under.fill).length) bg = fillColors(under.fill);
         }
       }
       if (bg === null) bg = slideBg;
@@ -958,6 +958,7 @@ const dim = (p: PicShape) => `${pxOf(p.rect.w)}×${pxOf(p.rect.h)}px`;
 
 /** Prefer the alt-text/title an author actually wrote over "Google Shape;134;p16". */
 function name(s: Shape): string {
+  if (s.kind === "cxn") return "Connector";
   if (s.kind !== "pic") return s.name || "Shape";
   const raw = s.descr || s.name || "";
   const clean = raw.split("\n")[0].trim();

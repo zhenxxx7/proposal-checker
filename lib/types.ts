@@ -132,6 +132,12 @@ export interface Para {
   sizes: number[];
   runs: Run[];
   align?: Align;
+  /** bullet character, when the paragraph carries one */
+  bullet?: string;
+  /** left margin in EMU (indent level is baked into this) */
+  marL?: number;
+  /** line-height multiplier (1 = single spacing) */
+  lineSpacing?: number;
 }
 
 export interface TextShape {
@@ -145,9 +151,28 @@ export interface TextShape {
   fill?: Fill;
   line?: Line;
   anchor?: Anchor;
+  /** preset geometry name (roundRect, ellipse, triangle, …); undefined = rect */
+  geom?: string;
+  /** roundRect corner radius as a fraction of the shorter side */
+  radius?: number;
+  /** text insets in EMU: [left, top, right, bottom] */
+  insets?: [number, number, number, number];
 }
 
-export type Shape = PicShape | TextShape;
+/** A connector (straight line). Rendered as a line, never as a box. */
+export interface CxnShape {
+  kind: "cxn";
+  id: string;
+  rect: Rect;
+  color: string;
+  /** EMU */
+  width: number;
+  dash: boolean;
+  flipH: boolean;
+  flipV: boolean;
+}
+
+export type Shape = PicShape | TextShape | CxnShape;
 
 export interface Slide {
   index: number;

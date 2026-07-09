@@ -38,6 +38,40 @@ export function parseScheme(themeDoc: Document | null): Scheme {
   return scheme;
 }
 
+/** Major (headings) and minor (body) latin faces from the theme's fontScheme. */
+export interface ThemeFonts {
+  major?: string;
+  minor?: string;
+}
+
+export function parseFontScheme(themeDoc: Document | null): ThemeFonts {
+  const out: ThemeFonts = {};
+  const fs = themeDoc?.getElementsByTagNameNS(NS_A, "fontScheme")[0];
+  if (!fs) return out;
+  for (const [tag, key] of [["majorFont", "major"], ["minorFont", "minor"]] as const) {
+    const latin = fs.getElementsByTagNameNS(NS_A, tag)[0]?.getElementsByTagNameNS(NS_A, "latin")[0];
+    const face = latin?.getAttribute("typeface");
+    if (face) out[key] = face;
+  }
+  return out;
+}
+
+/**
+ * A slide master's <p:clrMap> remaps placeholder names (bg1/tx1/bg2/tx2) onto
+ * scheme slots. Bake the mapping into the scheme so lookups stay a single get.
+ */
+export function applyClrMap(scheme: Scheme, clrMapEl: Element | null): Scheme {
+  const out = new Map(scheme);
+  const pairs: [string, string][] = clrMapEl
+    ? Array.from(clrMapEl.attributes).map((a) => [a.localName, a.value])
+    : Object.entries(CLR_MAP);
+  for (const [from, to] of pairs) {
+    const hex = scheme.get(to);
+    if (hex) out.set(from, hex);
+  }
+  return out;
+}
+
 /**
  * Resolve the colour inside a container element (solidFill, gs, ln, etc.) to a
  * CSS string. Handles srgbClr / schemeClr / sysClr / prstClr and the common
@@ -111,8 +145,9 @@ function colorFromContainer(container: Element, scheme: Scheme): string | null {
       case "sysClr":
         return applyMods(c.getAttribute("lastClr") ?? "000000", c);
       case "schemeClr": {
-        const mapped = CLR_MAP[c.getAttribute("val") ?? ""] ?? c.getAttribute("val") ?? "";
-        const hex = scheme.get(mapped);
+        const raw = c.getAttribute("val") ?? "";
+        // Direct hit first — applyClrMap bakes bg1/tx1/… into the scheme.
+        const hex = scheme.get(raw) ?? scheme.get(CLR_MAP[raw] ?? "");
         return hex ? applyMods(hex, c) : null;
       }
       case "prstClr": {
