@@ -19,7 +19,7 @@ let negotiated: Mode | null = null;
 
 /**
  * One structured-output call against any OpenAI-compatible endpoint.
- * Gemini, OpenRouter, and Ollama all accept this exact body.
+ * Gemini, OpenRouter, and any remote OpenAI-compatible endpoint accept this body.
  */
 export async function askForFindings(system: string, parts: Part[]): Promise<AiFinding[]> {
   const cfg = aiConfig();

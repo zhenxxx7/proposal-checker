@@ -118,12 +118,14 @@ npm run dev            # http://localhost:3000
 Rule checks need no configuration. For the AI pass, copy `.env.example` to
 `.env.local` and pick a provider:
 
-| `AI_PROVIDER` | Cost | Deployable | Privacy |
-|---|---|---|---|
-| `gemini` *(default)* | free tier | yes | free-tier data may be used for training |
-| `ollama` | free, local | no | deck never leaves the machine |
-| `openrouter` | free `:free` models | yes | depends on the model |
-| `custom` | — | — | set `AI_BASE_URL` to any OpenAI-compatible `/v1` |
+Only hosted (non-local) providers are supported, so the app deploys to Vercel
+serverless as-is:
+
+| `AI_PROVIDER` | Cost | Privacy |
+|---|---|---|
+| `gemini` *(default)* | free tier | free-tier data may be used for training |
+| `openrouter` | free `:free` models | depends on the model |
+| `custom` | — | set `AI_BASE_URL` to any remote OpenAI-compatible `/v1` |
 
 ```bash
 cp .env.example .env.local
@@ -131,9 +133,9 @@ cp .env.example .env.local
 # AI_API_KEY=...            # https://aistudio.google.com/apikey
 ```
 
-**If the deck is under NDA, use `ollama`.** Gemini's free tier permits Google to
-train on submitted data, and mockups are exactly the thing you would not want
-leaving the building.
+**If the deck is confidential, skip the AI pass.** The rule checks run entirely
+in the browser and upload nothing; only the AI pass sends data out, and Gemini's
+free tier permits Google to train on it.
 
 All four speak the same OpenAI chat-completions shape, so the whole AI layer is
 one `fetch` and a base URL — switching provider is one env var. The client
@@ -178,7 +180,7 @@ fallbacks without spending a quota.
 npm run mock:ai
 
 # terminal 2
-AI_PROVIDER=custom AI_BASE_URL=http://localhost:11435/v1 AI_MODEL=mock npm run dev
+AI_PROVIDER=custom AI_BASE_URL=http://localhost:11435/v1 AI_MODEL=mock AI_API_KEY=mock npm run dev
 
 # terminal 3
 npm run verify:ai
@@ -190,8 +192,8 @@ npm run verify:ui -- "proposal.pptx"   # drives the AI button too
 ## Deploying
 
 Deploys to Vercel as-is. Set `AI_PROVIDER` and `AI_API_KEY` as environment
-variables — they are read server-side only and never reach the browser.
-(`ollama` is the exception: it targets `localhost` and cannot run on Vercel.)
+variables — they are read server-side only and never reach the browser. All
+supported providers are hosted, so nothing depends on a machine-local endpoint.
 
 The deck itself is never uploaded. Only the AI pass sends data, and only:
 

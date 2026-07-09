@@ -1,6 +1,6 @@
 /**
  * Exercises the AI routes end-to-end against whatever provider is configured.
- * Point AI_BASE_URL at scripts/mock-ai.mjs to run it with no key.
+ * Point AI_BASE_URL at scripts/mock-ai.mjs (with a throwaway AI_API_KEY).
  *
  *   node scripts/verify-ai.mjs [baseUrl]
  */
