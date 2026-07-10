@@ -48,6 +48,8 @@ export default function Page() {
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Labels for the Dropzone spinner; a file unzip and a Google fetch read differently.
+  const [busy, setBusy] = useState({ title: "Reading the deck…", sub: "Unzipping slides and measuring every image." });
 
   // Revokes the *previous* map when `urls` is replaced, and everything on unmount.
   useEffect(() => () => urls.forEach((u) => URL.revokeObjectURL(u)), [urls]);
@@ -76,35 +78,77 @@ export default function Page() {
       .catch(() => setStatus({ configured: false, label: "", model: "" }));
   }, []);
 
-  const load = useCallback(async (file: File) => {
-    setPhase("parsing");
-    setError(null);
-    setFindings([]);
-    setDeck(null);
-    setUrls(new Map());
-    setAiDone(false);
-    setAiAuto(false);
-    setActive(null);
-    setQuery("");
-    setFileName(file.name);
-    // Let the "parsing" frame paint before we block the thread on unzip.
-    await new Promise((r) => setTimeout(r, 30));
+  // One ingest path for both a dropped file and a Google Slides link: `fetchBytes`
+  // supplies the .pptx bytes (from disk, or via the import route). `busy` labels
+  // the Dropzone spinner, since a link fetch reads very differently from an unzip.
+  const ingest = useCallback(
+    async (name: string, fetchBytes: () => Promise<ArrayBuffer>, busy: { title: string; sub: string }) => {
+      setBusy(busy);
+      setPhase("parsing");
+      setError(null);
+      setFindings([]);
+      setDeck(null);
+      setUrls(new Map());
+      setAiDone(false);
+      setAiAuto(false);
+      setActive(null);
+      setQuery("");
+      setFileName(name);
+      // Let the "parsing" frame paint before we block the thread on unzip.
+      await new Promise((r) => setTimeout(r, 30));
 
-    try {
-      const parsed = parsePptx(await file.arrayBuffer());
-      const next = new Map<string, string>();
-      for (const [path, blob] of parsed.blobs) next.set(path, URL.createObjectURL(blob));
-      setUrls(next);
-      setDeck(parsed);
-      setFindings(runRuleChecks(parsed));
-      setSlide(1);
-      setView("summary");
-      setPhase("ready");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not read that file.");
-      setPhase("idle");
-    }
-  }, []);
+      try {
+        const parsed = parsePptx(await fetchBytes());
+        const next = new Map<string, string>();
+        for (const [path, blob] of parsed.blobs) next.set(path, URL.createObjectURL(blob));
+        setUrls(next);
+        setDeck(parsed);
+        setFindings(runRuleChecks(parsed));
+        setSlide(1);
+        setView("summary");
+        setPhase("ready");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not read that deck.");
+        setPhase("idle");
+      }
+    },
+    [],
+  );
+
+  const load = useCallback(
+    (file: File) =>
+      ingest(file.name, () => file.arrayBuffer(), {
+        title: "Reading the deck…",
+        sub: "Unzipping slides and measuring every image.",
+      }),
+    [ingest],
+  );
+
+  // Fetch a link-shared Google Slides deck through the import route (a direct
+  // browser fetch to Google's export URL is blocked by CORS). The deck name is
+  // recovered from the response and replaces the placeholder set by ingest.
+  const loadUrl = useCallback(
+    (url: string) =>
+      ingest(
+        "Google Slides",
+        async () => {
+          const res = await fetch("/api/import-slides", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ url }),
+          });
+          if (!res.ok) {
+            const j = (await res.json().catch(() => ({}))) as { error?: string };
+            throw new Error(j.error || "Could not import that Google Slides link.");
+          }
+          const name = res.headers.get("x-filename");
+          if (name) setFileName(decodeURIComponent(name));
+          return res.arrayBuffer();
+        },
+        { title: "Importing from Google Slides…", sub: "Exporting the deck and reading every image." },
+      ),
+    [ingest],
+  );
 
   const imageJobs = useMemo(() => (deck ? selectImageJobs(deck) : []), [deck]);
 
@@ -269,7 +313,9 @@ export default function Page() {
           </Card>
         )}
 
-        {!deck && <Dropzone busy={phase === "parsing"} onFile={load} />}
+        {!deck && (
+          <Dropzone busy={phase === "parsing"} busyTitle={busy.title} busySub={busy.sub} onFile={load} onUrl={loadUrl} />
+        )}
 
         {deck && view === "summary" && (
           <Summary all={findings} groups={groups} slideCount={deck.slides.length} query={query} onOpen={openFinding} />

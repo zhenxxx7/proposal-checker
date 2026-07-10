@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Card } from "./ui";
+import { Button, Card } from "./ui";
 
 const CHECKS = [
   ["🔍", "Blurry images", "Effective DPI, accounting for crops and rotation"],
@@ -12,9 +12,26 @@ const CHECKS = [
   ["🖼️", "Text inside mockups", "AI reads the screenshots (optional)"],
 ] as const;
 
-export function Dropzone({ busy, onFile }: { busy: boolean; onFile: (f: File) => void }) {
+const looksLikeSlides = (v: string) =>
+  /docs\.google\.com\/presentation/i.test(v) || /^[a-zA-Z0-9_-]{25,}$/.test(v.trim());
+
+export function Dropzone({
+  busy,
+  busyTitle = "Reading the deck…",
+  busySub = "Unzipping slides and measuring every image.",
+  onFile,
+  onUrl,
+}: {
+  busy: boolean;
+  busyTitle?: string;
+  busySub?: string;
+  onFile: (f: File) => void;
+  onUrl: (url: string) => void;
+}) {
   const [over, setOver] = useState(false);
   const [rejected, setRejected] = useState(false);
+  const [link, setLink] = useState("");
+  const [linkError, setLinkError] = useState(false);
 
   const take = (f: File | undefined) => {
     if (!f) return;
@@ -24,6 +41,18 @@ export function Dropzone({ busy, onFile }: { busy: boolean; onFile: (f: File) =>
       return;
     }
     onFile(f);
+  };
+
+  const submitLink = (e: React.FormEvent) => {
+    e.preventDefault();
+    const v = link.trim();
+    if (!looksLikeSlides(v)) {
+      setLinkError(true);
+      setTimeout(() => setLinkError(false), 2600);
+      return;
+    }
+    setLinkError(false);
+    onUrl(v);
   };
 
   return (
@@ -59,8 +88,8 @@ export function Dropzone({ busy, onFile }: { busy: boolean; onFile: (f: File) =>
         {busy ? (
           <>
             <Spinner />
-            <p className="text-base font-medium">Reading the deck…</p>
-            <p className="text-sm text-zinc-500">Unzipping slides and measuring every image.</p>
+            <p className="text-base font-medium">{busyTitle}</p>
+            <p className="text-sm text-zinc-500">{busySub}</p>
           </>
         ) : (
           <>
@@ -80,6 +109,42 @@ export function Dropzone({ busy, onFile }: { busy: boolean; onFile: (f: File) =>
           </>
         )}
       </label>
+
+      <div className="mt-5 flex items-center gap-3 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
+        <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+        or paste a link
+        <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+      </div>
+
+      <form onSubmit={submitLink} className="mt-4">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="relative flex-1">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm">🔗</span>
+            <input
+              type="text"
+              inputMode="url"
+              value={link}
+              disabled={busy}
+              onChange={(e) => setLink(e.target.value)}
+              placeholder="https://docs.google.com/presentation/d/…"
+              aria-label="Google Slides link"
+              className={`w-full rounded-xl border bg-white py-2.5 pl-9 pr-3 text-sm shadow-sm outline-none placeholder:text-zinc-400 disabled:opacity-50 dark:bg-zinc-900 ${
+                linkError
+                  ? "border-rose-400 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20"
+                  : "border-zinc-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-zinc-800"
+              }`}
+            />
+          </div>
+          <Button type="submit" variant="primary" disabled={busy || !link.trim()} className="justify-center px-5 py-2.5">
+            Analyze
+          </Button>
+        </div>
+        <p className={`mt-2 text-xs ${linkError ? "text-rose-500" : "text-zinc-400"}`}>
+          {linkError
+            ? "That doesn't look like a Google Slides link."
+            : "The deck must be shared as “Anyone with the link”. It's exported through Google, not stored."}
+        </p>
+      </form>
 
       <Card className="mt-6 grid gap-x-6 gap-y-4 p-5 sm:grid-cols-2">
         {CHECKS.map(([icon, title, sub]) => (
