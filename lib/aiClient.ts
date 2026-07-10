@@ -31,6 +31,17 @@ export function slideTexts(deck: Deck) {
     .filter((s) => s.texts.length > 0);
 }
 
+/** Normalise smart quotes, dashes, and whitespace so a verbatim match survives
+ *  the model retyping “ vs " or collapsing spaces. Case is preserved — a
+ *  capitalisation finding must still match the exact casing on the slide. */
+const normQuote = (s: string) =>
+  s
+    .replace(/[‘’‛]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+
 export async function analyzeText(deck: Deck, signal?: AbortSignal): Promise<Finding[]> {
   const slides = slideTexts(deck);
   if (!slides.length) return [];
@@ -42,7 +53,17 @@ export async function analyzeText(deck: Deck, signal?: AbortSignal): Promise<Fin
   });
   const json = (await res.json()) as { findings?: AiFinding[]; error?: string };
   if (json.error) throw new Error(json.error);
-  return (json.findings ?? []).map((f) => toFinding(f, "ai-text"));
+
+  // Ground every finding in the real slide text: the model is told to quote
+  // verbatim, so a quote that is not actually on its slide is a hallucination.
+  // Drop it. Quote-less findings (deck-wide consistency) are kept as-is.
+  const textByN = new Map(slides.map((s) => [s.n, normQuote(s.texts.join("\n"))]));
+  return (json.findings ?? [])
+    .filter((f) => {
+      if (!f.quote?.trim()) return true;
+      return (textByN.get(f.slide) ?? "").includes(normQuote(f.quote));
+    })
+    .map((f) => toFinding(f, "ai-text"));
 }
 
 export interface ImageJob {

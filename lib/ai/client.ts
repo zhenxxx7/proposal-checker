@@ -57,7 +57,8 @@ async function complete(
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model,
-    temperature: 0.1,
+    // Proofreading wants the same verdict every run, not creative variance.
+    temperature: 0,
     max_tokens: 8192,
     messages: [
       { role: "system", content: system },
