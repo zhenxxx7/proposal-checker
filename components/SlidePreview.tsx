@@ -42,9 +42,12 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
   const cqw = (emu: number) => `${(emu / W) * 100}cqw`;
   const bg = fillCss(slide.background) ?? "#ffffff";
 
+  // Presentation apps paint master and layout shapes before the slide itself.
+  // Keep that order here while findings still point only at slide-owned shapes.
+  const paintedShapes = [...(slide.backgroundShapes ?? []), ...slide.shapes];
   const shapes = thumb
-    ? slide.shapes.filter((s) => s.kind === "cxn" || (s.rect.w * s.rect.h) / (W * H) >= 0.005)
-    : slide.shapes;
+    ? paintedShapes.filter((s) => s.kind === "cxn" || (s.rect.w * s.rect.h) / (W * H) >= 0.005)
+    : paintedShapes;
 
   return (
     <div
@@ -52,7 +55,6 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
       style={{ aspectRatio: `${W} / ${H}`, containerType: "inline-size", background: bg }}
     >
       {shapes.map((sh) => {
-        const on = !thumb && highlight?.has(sh.id);
         const box = {
           left: pct(sh.rect.x, W),
           top: pct(sh.rect.y, H),
@@ -91,7 +93,7 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
           return (
             <div
               key={sh.id}
-              className={`absolute overflow-hidden ${on ? "z-20 outline outline-[3px] outline-rose-500" : ""}`}
+              className="absolute overflow-hidden"
               style={box}
               title={sh.descr || sh.name}
             >
@@ -116,20 +118,38 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
           );
         }
 
-        return <TextBox key={sh.id} sh={sh} on={!!on} box={box} cqw={cqw} />;
+        return <TextBox key={sh.id} sh={sh} box={box} cqw={cqw} />;
       })}
+
+      {!thumb &&
+        shapes
+          .filter((sh) => highlight?.has(sh.id))
+          .map((sh) => (
+            <span
+              key={`marker-${sh.id}`}
+              data-finding-marker
+              aria-label="Finding location"
+              className="pointer-events-none absolute z-10 box-border border-[3px] border-rose-500"
+              style={{
+                left: pct(sh.rect.x, W),
+                top: pct(sh.rect.y, H),
+                width: pct(sh.rect.w, W),
+                height: pct(sh.rect.h, H),
+              }}
+            >
+              <span className="absolute -left-1.5 -top-1.5 h-3 w-3 bg-rose-500 ring-2 ring-white dark:ring-zinc-950" />
+            </span>
+          ))}
     </div>
   );
 }
 
 function TextBox({
   sh,
-  on,
   box,
   cqw,
 }: {
   sh: TextShape;
-  on: boolean;
   box: React.CSSProperties;
   cqw: (emu: number) => string;
 }) {
@@ -148,7 +168,7 @@ function TextBox({
 
   return (
     <div
-      className={`absolute flex flex-col overflow-hidden ${on ? "z-20 outline outline-[3px] outline-rose-500" : ""}`}
+      className="absolute flex flex-col overflow-hidden"
       style={{
         ...box,
         justifyContent: justify,

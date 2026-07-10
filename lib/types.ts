@@ -176,6 +176,11 @@ export type Shape = PicShape | TextShape | CxnShape;
 
 export interface Slide {
   index: number;
+  /**
+   * Decorative shapes inherited from the slide master and layout. They render
+   * beneath slide content but stay out of checker rules and findings.
+   */
+  backgroundShapes?: Shape[];
   shapes: Shape[];
   background?: Fill;
 }

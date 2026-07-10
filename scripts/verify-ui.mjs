@@ -96,12 +96,12 @@ expect(
 );
 await page.screenshot({ path: "scripts/__summary.png" });
 
-console.log("\n5. Click a finding -> jumps to the slide, highlights the shape");
+console.log("\n5. Click a finding -> jumps to the slide, marks its location");
 expect((await page.$$("[data-finding]")).length > 0, "top group is expanded on arrival");
 await (await page.$("[data-finding]")).click();
 await wait(800);
 expect((await page.$$("[data-stage]")).length === 1, "switched to slides view");
-expect((await page.$$("[data-stage] [class*=outline-rose-500]")).length >= 1, "offending shape outlined");
+expect((await page.$$("[data-stage] [data-finding-marker]")).length >= 1, "finding marker shown without raising the shape");
 await page.screenshot({ path: "scripts/__slides.png" });
 
 console.log("\n6. Slide rail thumbnails render lazily");

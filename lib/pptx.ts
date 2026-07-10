@@ -32,6 +32,19 @@ interface Ctx {
   fonts: ThemeFonts;
 }
 
+interface MasterLayer {
+  ctx: Ctx;
+  bg?: Fill;
+  shapes: Shape[];
+}
+
+interface LayoutLayer {
+  master: MasterLayer;
+  bg?: Fill;
+  shapes: Shape[];
+  showsMasterShapes: boolean;
+}
+
 export function parsePptx(buf: ArrayBuffer): Deck {
   const wanted = (name: string) =>
     name === "ppt/presentation.xml" ||
@@ -82,7 +95,7 @@ export function parsePptx(buf: ArrayBuffer): Deck {
   const firstRelTo = (rels: Map<string, string>, contains: string) =>
     [...rels.values()].find((t) => t.includes(contains));
 
-  const masterCache = new Map<string, { ctx: Ctx; bg?: Fill }>();
+  const masterCache = new Map<string, MasterLayer>();
   const masterOf = (masterPath: string) => {
     let m = masterCache.get(masterPath);
     if (!m) {
@@ -91,23 +104,32 @@ export function parsePptx(buf: ArrayBuffer): Deck {
       const themeDoc = themePath && files[themePath] ? xml(themePath) : null;
       const clrMapEl = doc?.getElementsByTagNameNS(NS_P, "clrMap")[0] ?? null;
       const scheme = applyClrMap(parseScheme(themeDoc), clrMapEl);
-      m = {
-        ctx: { scheme, fonts: parseFontScheme(themeDoc) },
-        bg: doc ? resolveBackground(doc, scheme) : undefined,
-      };
+      const ctx = { scheme, fonts: parseFontScheme(themeDoc) };
+      const shapes: Shape[] = [];
+      const tree = doc?.getElementsByTagNameNS(NS_P, "spTree")[0];
+      if (tree) walk(tree, IDENTITY, relsFor(masterPath), shapes, `master-${masterPath}`, ctx);
+      m = { ctx, bg: doc ? resolveBackground(doc, scheme) : undefined, shapes };
       masterCache.set(masterPath, m);
     }
     return m;
   };
 
-  const layoutCache = new Map<string, { master: { ctx: Ctx; bg?: Fill }; bg?: Fill }>();
+  const layoutCache = new Map<string, LayoutLayer>();
   const layoutOf = (layoutPath: string) => {
     let l = layoutCache.get(layoutPath);
     if (!l) {
       const doc = files[layoutPath] ? xml(layoutPath) : null;
       const masterPath = doc ? firstRelTo(relsFor(layoutPath), "slideMasters/") : undefined;
       const master = masterOf(masterPath ?? "ppt/slideMasters/slideMaster1.xml");
-      l = { master, bg: doc ? resolveBackground(doc, master.ctx.scheme) : undefined };
+      const shapes: Shape[] = [];
+      const tree = doc?.getElementsByTagNameNS(NS_P, "spTree")[0];
+      if (tree) walk(tree, IDENTITY, relsFor(layoutPath), shapes, `layout-${layoutPath}`, master.ctx);
+      l = {
+        master,
+        bg: doc ? resolveBackground(doc, master.ctx.scheme) : undefined,
+        shapes,
+        showsMasterShapes: doc?.documentElement.getAttribute("showMasterSp") !== "0",
+      };
       layoutCache.set(layoutPath, l);
     }
     return l;
@@ -131,6 +153,13 @@ export function parsePptx(buf: ArrayBuffer): Deck {
     if (tree) walk(tree, IDENTITY, rels, shapes, `s${i + 1}`, ctx);
     return {
       index: i + 1,
+      // Slide XML contains only slide-specific content. Rebuild the visual
+      // stack from master -> layout -> slide so branded panels, footer bars,
+      // and master logos are present without contaminating rule checks.
+      backgroundShapes: [
+        ...(doc.documentElement.getAttribute("showMasterSp") !== "0" && layout.showsMasterShapes ? layout.master.shapes : []),
+        ...layout.shapes,
+      ],
       shapes,
       background: resolveBackground(doc, ctx.scheme) ?? layout.bg ?? layout.master.bg,
     };
@@ -152,6 +181,7 @@ function walk(
   let n = 0;
   for (const child of elementChildren(parent)) {
     if (child.namespaceURI !== NS_P) continue;
+    if (firstNS(child, NS_P, "cNvPr")?.getAttribute("hidden") === "1") continue;
     const id = `${idPrefix}-${n++}`;
     switch (child.localName) {
       case "grpSp": {

@@ -51,7 +51,7 @@ export default function Page() {
     if (!deck) return;
     const names = new Set<string>();
     for (const s of deck.slides)
-      for (const sh of s.shapes)
+      for (const sh of [...(s.backgroundShapes ?? []), ...s.shapes])
         if (sh.kind === "text")
           for (const p of sh.paragraphs) for (const r of p.runs) if (r.font) names.add(r.font);
     const url = googleFontsUrl(collectFamilies(names));
@@ -179,18 +179,18 @@ export default function Page() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 border-b border-zinc-200 bg-white/80 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/80">
-        <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-3 px-4 md:px-6">
+      <header className="sticky top-0 z-30 border-b border-zinc-200 bg-white/95 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/95">
+        <div className="mx-auto flex h-16 w-full max-w-[1920px] items-center gap-3 px-4 lg:px-5">
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-zinc-900 text-white dark:bg-white dark:text-zinc-900">
               <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="m3 10.5 4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </span>
             <div className="min-w-0">
-              <p className="text-[13px] font-semibold leading-tight tracking-tight">Proposal Checker</p>
+              <p className="text-[13px] font-semibold leading-tight">Proposal Checker</p>
               {deck && (
-                <p className="truncate text-[11px] leading-tight text-zinc-400">
+                <p className="truncate text-[11px] leading-tight text-zinc-500 dark:text-zinc-400">
                   {fileName} · {deck.slides.length} slides
                 </p>
               )}
@@ -242,7 +242,7 @@ export default function Page() {
         )}
       </header>
 
-      <main className="mx-auto flex w-full max-w-[1600px] flex-1 flex-col gap-4 p-4 md:p-6">
+      <main className="mx-auto flex w-full max-w-[1920px] flex-1 flex-col gap-4 p-4 lg:p-5">
         {error && (
           <Card className="border-rose-300 bg-rose-50 px-4 py-2.5 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
             {error}
@@ -256,21 +256,28 @@ export default function Page() {
         )}
 
         {deck && view === "slides" && current && (
-          <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[10rem_1fr_24rem]">
-            <SlideRail deck={deck} urls={urls} counts={perSlide} current={slide} onPick={setSlide} />
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[11.5rem_minmax(0,1fr)_22rem]">
+            <aside className="flex min-h-0 max-h-[calc(100vh-10.5rem)] flex-col overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100/80 p-2 dark:border-zinc-800 dark:bg-zinc-900/50">
+              <div className="flex shrink-0 items-center justify-between px-1.5 pb-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Slides</p>
+                <span className="text-[11px] tabular-nums text-zinc-400">{deck.slides.length}</span>
+              </div>
+              <SlideRail deck={deck} urls={urls} counts={perSlide} current={slide} onPick={setSlide} />
+            </aside>
 
-            <section data-stage className="min-w-0">
-              <Card className="overflow-hidden p-0">
-                <SlidePreview deck={deck} slide={current} urls={urls} highlight={highlight} />
-              </Card>
-              <p data-slide-caption className="mt-2.5 text-xs text-zinc-400">
+            <section data-stage className="flex min-h-[32rem] min-w-0 flex-col rounded-lg border border-zinc-200 bg-zinc-100 p-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-md">
+                <div className="w-full overflow-hidden rounded-md bg-white shadow-[0_10px_28px_rgba(0,0,0,0.16)]" style={{ maxWidth: "min(100%, calc((100vh - 12.5rem) * 1.778))" }}>
+                  <SlidePreview deck={deck} slide={current} urls={urls} highlight={highlight} />
+                </div>
+              </div>
+              <p data-slide-caption className="px-1 pt-2.5 text-[11px] text-zinc-500 dark:text-zinc-400">
                 Slide {slide} of {deck.slides.length} · <kbd className="font-mono">←</kbd>{" "}
-                <kbd className="font-mono">→</kbd> to move · approximate reconstruction, click a finding to highlight its
-                shape
+                <kbd className="font-mono">→</kbd> to move · click a finding to highlight its shape
               </p>
             </section>
 
-            <Card className="flex max-h-[calc(100vh-9.5rem)] flex-col overflow-hidden p-0">
+            <aside className="flex max-h-[calc(100vh-10.5rem)] flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
               <div className="border-b border-zinc-100 px-4 py-3 text-[13px] font-medium dark:border-zinc-800">
                 {slideFindings.length} finding{slideFindings.length === 1 ? "" : "s"} on this slide
               </div>
@@ -290,7 +297,7 @@ export default function Page() {
                   />
                 ))}
               </div>
-            </Card>
+            </aside>
           </div>
         )}
       </main>

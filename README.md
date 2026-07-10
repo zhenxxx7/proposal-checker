@@ -212,14 +212,12 @@ Both API routes set `maxDuration = 300`.
 
 - **Parsing is main-thread.** `DOMParser` does not exist in a Web Worker, so a
   143MB deck blocks the UI for roughly a second. Measured: 757ms parse, 13ms checks.
-- **The slide preview is a reconstruction, not a renderer.** Shapes are positioned
-  from the OOXML geometry, and it does render the slide background, shape fills,
-  borders, and text colour/alignment (resolving theme colours from `theme1.xml`
-  plus alpha/lumMod/lumOff/shade/tint modifiers) so it reads like the real deck.
-  What it does *not* reproduce: theme fonts (everything is Geist), shadows and
-  other effects, WordArt, and text autofit. Backgrounds inherited from a slide
-  layout or master rather than set on the slide itself fall back to white — in
-  the NLB deck that is 5 of 56 slides.
+- **The slide preview reconstructs the complete visual stack.** It renders the
+  slide background plus visual shapes inherited from the layout and master, so
+  branded panels, footer bars, and master logos stay visible. Theme colours,
+  fills, borders, text styling, and geometry are resolved from OOXML.
+  It remains a browser reconstruction rather than an Office renderer: shadows,
+  advanced effects, WordArt, tables, charts, and text autofit may still differ.
 - **Image selection for the AI pass**: pictures at least 300px wide whose on-slide
   area is ≥2% of the slide, deduplicated by file + crop. Two requests run in
   flight at a time — free tiers cap requests per minute.

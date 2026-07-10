@@ -19,7 +19,7 @@ export function SlideRail({
   onPick: (n: number) => void;
 }) {
   return (
-    <nav className="flex max-h-[calc(100vh-9.5rem)] flex-col gap-2 overflow-y-auto pr-1">
+    <nav aria-label="Slides" className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
       {deck.slides.map((s) => (
         <Thumb key={s.index} active={s.index === current} count={counts.get(s.index)} label={s.index} onClick={() => onPick(s.index)}>
           <SlidePreview deck={deck} slide={s} urls={urls} variant="thumb" />
@@ -73,7 +73,7 @@ function Thumb({
     <button
       ref={ref}
       onClick={onClick}
-      className={`group relative shrink-0 overflow-hidden rounded-lg border bg-white transition dark:bg-zinc-900 ${
+      className={`group relative shrink-0 overflow-hidden rounded-md border bg-white transition dark:bg-zinc-900 ${
         active
           ? "border-indigo-500 ring-2 ring-indigo-500/30"
           : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
