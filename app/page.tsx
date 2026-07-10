@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AiProgress } from "@/components/AiProgress";
 import { Dropzone } from "@/components/Dropzone";
 import { FindingCard } from "@/components/FindingCard";
 import { SlidePreview } from "@/components/SlidePreview";
@@ -40,6 +41,9 @@ export default function Page() {
   // failed run doesn't retrigger the effect into an infinite retry loop.
   const [aiAuto, setAiAuto] = useState(false);
   const [abort, setAbort] = useState<AbortController | null>(null);
+  // Whether the AI-progress popup is showing. Opens on every run; "Run in
+  // background" minimises it to the thin header bar without stopping the pass.
+  const [aiPopup, setAiPopup] = useState(false);
 
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
@@ -109,6 +113,7 @@ export default function Page() {
     const controller = new AbortController();
     setAbort(controller);
     setPhase("ai");
+    setAiPopup(true);
     setError(null);
     setFindings((f) => f.filter((x) => x.source === "rule"));
 
@@ -134,6 +139,7 @@ export default function Page() {
     } finally {
       setAbort(null);
       setPhase("ready");
+      setAiPopup(false);
       setProgress({ done: 0, total: 0, label: "" });
     }
   }, [deck, imageJobs]);
@@ -315,6 +321,15 @@ export default function Page() {
           </div>
         )}
       </main>
+
+      <AiProgress
+        open={phase === "ai" && aiPopup}
+        progress={progress}
+        images={imageJobs.length}
+        provider={status ? `${status.label} · ${status.model}` : ""}
+        onCancel={() => abort?.abort()}
+        onMinimize={() => setAiPopup(false)}
+      />
     </>
   );
 }
