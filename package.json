@@ -9,6 +9,7 @@
     "lint": "eslint",
     "check": "tsx scripts/check.ts",
     "verify:ui": "node scripts/verify-ui.mjs",
+    "verify:google": "node scripts/verify-google-slides.mjs",
     "verify:ai": "node scripts/verify-ai.mjs",
     "mock:ai": "node scripts/mock-ai.mjs"
   },

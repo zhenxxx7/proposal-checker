@@ -74,7 +74,12 @@ expect(after.stored === (after.dark ? "dark" : "light"), `persisted to localStor
 console.log("\n3. Upload the deck");
 await (await page.$("input[type=file]")).uploadFile(deck);
 await page.waitForSelector("[data-readiness]", { timeout: 60000 });
-await wait(1200);
+if (status.configured) {
+  await page.waitForFunction(() => document.querySelector("header").innerText.includes("Re-run AI check"), {
+    timeout: 240000,
+  });
+}
+await wait(800);
 
 console.log("\n4. Summary view");
 const banner = await page.$eval("h2", (e) => e.textContent);
@@ -91,8 +96,8 @@ cards.forEach((c) => console.log(`        · ${c}`));
 
 const aiCtl = await headerText();
 expect(
-  status.configured ? /Deep check with AI/.test(aiCtl) : /AI check needs a key/.test(aiCtl),
-  status.configured ? "AI button enabled" : "AI button disabled with a reason",
+  status.configured ? /Re-run AI check/.test(aiCtl) : /AI check needs a key/.test(aiCtl),
+  status.configured ? "AI ran automatically with the local check" : "AI button disabled with a reason",
 );
 await page.screenshot({ path: "scripts/__summary.png" });
 
@@ -147,14 +152,14 @@ const findHeaderButton = async (text) => {
 
 if (status.configured) {
   console.log("\n9. Cancel mid-run keeps partial results");
-  await (await findHeaderButton("Deep check with AI")).click();
-  await page.waitForFunction(() => document.querySelector("header").innerText.includes("Reading images"), {
+  await (await findHeaderButton("Re-run AI check")).click();
+  await page.waitForFunction(() => document.querySelector("header").innerText.includes("Cancel"), {
     timeout: 60000,
   });
   const cancel = await findHeaderButton("Cancel");
   expect(!!cancel, "Cancel button appears while running");
   await cancel.click();
-  await page.waitForFunction(() => !document.querySelector("header").innerText.includes("Reading images"), {
+  await page.waitForFunction(() => !document.querySelector("header").innerText.includes("Cancel"), {
     timeout: 60000,
   });
   await wait(500);
@@ -187,7 +192,7 @@ if (status.configured) {
   expect(/slide \d+/.test(shown), "in-image finding is attributed to a slide");
 
   const stats3 = await readStats();
-  expect(stats3.join("/") !== stats.join("/"), `counts grew after AI: ${stats.join("/")} -> ${stats3.join("/")}`);
+  expect(stats3.join("/") !== partial.join("/"), `full AI results restored: ${partial.join("/")} -> ${stats3.join("/")}`);
   await page.screenshot({ path: "scripts/__ai.png" });
 } else {
   console.log("\n9. AI deep check — skipped (no provider configured)");

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Dropzone } from "@/components/Dropzone";
+import { Dropzone, type GoogleSlidesStream } from "@/components/Dropzone";
 import { FindingCard } from "@/components/FindingCard";
 import { SlidePreview } from "@/components/SlidePreview";
 import { SlideRail, countBySlide } from "@/components/SlideRail";
@@ -11,7 +11,7 @@ import { analyzeImages, analyzeText, selectImageJobs } from "@/lib/aiClient";
 import { collectFamilies, googleFontsUrl } from "@/lib/fonts";
 import { runRuleChecks } from "@/lib/checks";
 import { groupFindings } from "@/lib/groups";
-import { parsePptx } from "@/lib/pptx";
+import { parsePptx, parsePptxStream } from "@/lib/pptx";
 import { bySeverity, download, toMarkdown } from "@/lib/report";
 import type { Deck, Finding } from "@/lib/types";
 
@@ -25,6 +25,18 @@ interface Status {
   model: string;
 }
 
+const NO_AI: Status = { configured: false, label: "", model: "" };
+
+async function fetchAiStatus(): Promise<Status> {
+  try {
+    const response = await fetch("/api/status", { cache: "no-store" });
+    if (!response.ok) return NO_AI;
+    return await response.json() as Status;
+  } catch {
+    return NO_AI;
+  }
+}
+
 export default function Page() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [view, setView] = useState<View>("summary");
@@ -36,9 +48,6 @@ export default function Page() {
   const [progress, setProgress] = useState({ done: 0, total: 0, label: "" });
   const [status, setStatus] = useState<Status | null>(null);
   const [aiDone, setAiDone] = useState(false);
-  // Fires the AI pass once per deck automatically; distinct from aiDone so a
-  // failed run doesn't retrigger the effect into an infinite retry loop.
-  const [aiAuto, setAiAuto] = useState(false);
   const [abort, setAbort] = useState<AbortController | null>(null);
 
   const [slide, setSlide] = useState(1);
@@ -66,68 +75,70 @@ export default function Page() {
   }, [deck]);
 
   useEffect(() => {
-    fetch("/api/status")
-      .then((r) => r.json())
-      .then((j: Status) => setStatus(j))
-      .catch(() => setStatus({ configured: false, label: "", model: "" }));
+    void fetchAiStatus().then(setStatus);
   }, []);
 
-  const load = useCallback(async (file: File) => {
-    setPhase("parsing");
-    setError(null);
-    setFindings([]);
-    setDeck(null);
-    setUrls(new Map());
-    setAiDone(false);
-    setAiAuto(false);
-    setActive(null);
-    setQuery("");
-    setFileName(file.name);
-    // Let the "parsing" frame paint before we block the thread on unzip.
-    await new Promise((r) => setTimeout(r, 30));
-
-    try {
-      const parsed = parsePptx(await file.arrayBuffer());
-      const next = new Map<string, string>();
-      for (const [path, blob] of parsed.blobs) next.set(path, URL.createObjectURL(blob));
-      setUrls(next);
-      setDeck(parsed);
-      setFindings(runRuleChecks(parsed));
-      setSlide(1);
-      setView("summary");
-      setPhase("ready");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not read that file.");
-      setPhase("idle");
-    }
-  }, []);
-
-  const imageJobs = useMemo(() => (deck ? selectImageJobs(deck) : []), [deck]);
-
-  const runAi = useCallback(async () => {
-    if (!deck) return;
+  const runCombined = useCallback(async (
+    targetDeck: Deck,
+    jobs: ReturnType<typeof selectImageJobs>,
+    includeRules: boolean,
+  ) => {
     const controller = new AbortController();
     setAbort(controller);
     setPhase("ai");
     setError(null);
-    setFindings((f) => f.filter((x) => x.source === "rule"));
+    setAiDone(false);
+
+    const total = jobs.length + 1 + (includeRules ? 1 : 0);
+    let localDone = 0;
+    let textDone = 0;
+    let imagesDone = 0;
+    const report = (label: string) =>
+      setProgress({ done: localDone + textDone + imagesDone, total, label });
+
+    report(includeRules ? "Running local and AI checks..." : "Re-running AI checks...");
 
     try {
-      const total = imageJobs.length + 1;
-      setProgress({ done: 0, total, label: "Proofreading slide text…" });
-      const text = await analyzeText(deck, controller.signal);
-      setFindings((f) => [...f, ...text]);
-      setProgress({ done: 1, total, label: `Reading ${imageJobs.length} images…` });
-
-      // Returns whatever it collected before an abort — a cancelled run still
-      // shows the images it managed to read.
-      const images = await analyzeImages(
-        imageJobs,
-        (done, n) => setProgress({ done: done + 1, total, label: `Reading images ${done}/${n}…` }),
+      // Start remote text and vision work first. Local rules run while those
+      // requests are already in flight.
+      const textPromise = analyzeText(targetDeck, controller.signal).then((result) => {
+        textDone = 1;
+        report("Analyzing deck...");
+        return result;
+      });
+      const imagesPromise = analyzeImages(
+        jobs,
+        (done) => {
+          imagesDone = done;
+          report("Analyzing deck...");
+        },
         2,
         controller.signal,
       );
-      setFindings((f) => [...f, ...images]);
+
+      if (includeRules) {
+        setFindings(runRuleChecks(targetDeck));
+        localDone = 1;
+      } else {
+        setFindings((current) => current.filter((finding) => finding.source === "rule"));
+      }
+      report("Analyzing deck...");
+
+      const [textResult, imageResult] = await Promise.allSettled([textPromise, imagesPromise]);
+      const combined = [
+        ...(textResult.status === "fulfilled" ? textResult.value : []),
+        ...(imageResult.status === "fulfilled" ? imageResult.value : []),
+      ];
+      setFindings((current) => [...current.filter((finding) => finding.source === "rule"), ...combined]);
+
+      const failure = textResult.status === "rejected"
+        ? textResult.reason
+        : imageResult.status === "rejected"
+          ? imageResult.reason
+          : null;
+      if (failure && !controller.signal.aborted) {
+        setError(failure instanceof Error ? failure.message : "AI check partly failed.");
+      }
       if (!controller.signal.aborted) setAiDone(true);
     } catch (e) {
       if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "AI check failed.");
@@ -136,17 +147,60 @@ export default function Page() {
       setPhase("ready");
       setProgress({ done: 0, total: 0, label: "" });
     }
-  }, [deck, imageJobs]);
+  }, []);
 
-  // Auto-run the AI pass the moment a deck is parsed and a provider is
-  // configured, so one drop yields rule + AI findings with no extra click.
-  // aiAuto latches per deck (reset in load) so an AI error won't loop.
-  useEffect(() => {
-    if (phase === "ready" && !aiAuto && !abort && status?.configured && deck) {
-      setAiAuto(true);
-      runAi();
+  const loadDeck = useCallback(async (name: string, readDeck: () => Promise<Deck>) => {
+    setPhase("parsing");
+    setError(null);
+    setFindings([]);
+    setDeck(null);
+    setUrls(new Map());
+    setAiDone(false);
+    setActive(null);
+    setQuery("");
+    setFileName(name);
+    // Let the parsing frame paint before unzip blocks the main thread.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    try {
+      // Refresh this for every deck. A transient startup failure on a phone
+      // must not leave automatic AI analysis disabled for the whole session.
+      const [parsed, providerStatus] = await Promise.all([readDeck(), fetchAiStatus()]);
+      setStatus(providerStatus);
+
+      const next = new Map<string, string>();
+      for (const [path, blob] of parsed.blobs) next.set(path, URL.createObjectURL(blob));
+      setUrls(next);
+      setDeck(parsed);
+      setSlide(1);
+      setView("summary");
+
+      if (providerStatus.configured) {
+        await runCombined(parsed, selectImageJobs(parsed), true);
+      } else {
+        setFindings(runRuleChecks(parsed));
+        setPhase("ready");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not read that file.");
+      setPhase("idle");
     }
-  }, [phase, aiAuto, abort, status, deck, runAi]);
+  }, [runCombined]);
+
+  const load = useCallback(
+    (file: File) => loadDeck(file.name, async () => parsePptx(await file.arrayBuffer())),
+    [loadDeck],
+  );
+  const loadGoogleSlides = useCallback(
+    (source: GoogleSlidesStream) =>
+      loadDeck(source.name, () => parsePptxStream(source.stream, source.reportProgress)),
+    [loadDeck],
+  );
+
+  const imageJobs = useMemo(() => (deck ? selectImageJobs(deck) : []), [deck]);
+  const rerunAi = useCallback(() => {
+    if (deck) void runCombined(deck, imageJobs, false);
+  }, [deck, imageJobs, runCombined]);
 
   const matches = useCallback(
     (f: Finding) => {
@@ -221,6 +275,7 @@ export default function Page() {
                   <SearchInput value={query} onChange={setQuery} />
                 </div>
                 <Button
+                  className={phase === "ai" ? "hidden sm:inline-flex" : ""}
                   onClick={() =>
                     download(`${fileName}.check.md`, toMarkdown(fileName, deck.slides.length, findings), "text/markdown")
                   }
@@ -238,7 +293,7 @@ export default function Page() {
                   aiDone={aiDone}
                   images={imageJobs.length}
                   label={progress.label}
-                  onClick={runAi}
+                  onClick={rerunAi}
                 />
               </>
             )}
@@ -263,7 +318,25 @@ export default function Page() {
           </Card>
         )}
 
-        {!deck && <Dropzone busy={phase === "parsing"} onFile={load} />}
+        {deck && phase === "ai" && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex min-h-10 items-center gap-3 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-950 dark:border-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-100"
+          >
+            <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600 dark:border-indigo-800 dark:border-t-indigo-300" />
+            <span className="min-w-0 flex-1 truncate">{progress.label || "Analyzing presentation..."}</span>
+            {progress.total > 0 && (
+              <span className="shrink-0 text-xs tabular-nums text-indigo-700 dark:text-indigo-300">
+                {progress.done}/{progress.total}
+              </span>
+            )}
+          </div>
+        )}
+
+        {!deck && (
+          <Dropzone busy={phase === "parsing"} onFile={load} onGoogleSlides={loadGoogleSlides} />
+        )}
 
         {deck && view === "summary" && (
           <Summary all={findings} groups={groups} slideCount={deck.slides.length} query={query} onOpen={openFinding} />
@@ -352,7 +425,10 @@ function AiButton({
   return (
     <Button variant="primary" onClick={onClick} disabled={running || !status} title={hint}>
       {running && <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />}
-      {running ? label || "Running…" : aiDone ? `Re-run AI check` : `Deep check with AI (${images})`}
+      <span className="sm:hidden">{running ? "Analyzing" : aiDone ? "AI again" : "AI check"}</span>
+      <span className="hidden sm:inline">
+        {running ? label || "Running..." : aiDone ? "Re-run AI check" : `Deep check with AI (${images})`}
+      </span>
     </Button>
   );
 }

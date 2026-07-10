@@ -42,3 +42,6 @@ next-env.d.ts
 
 # verification artifacts
 scripts/__*.png
+
+# codex remote attachments
+.codex-remote-attachments/

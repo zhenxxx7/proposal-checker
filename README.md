@@ -1,6 +1,7 @@
 # Proposal Checker
 
-Drop a `.pptx` proposal in. Get back a slide-by-slide list of typos, blurry images,
+Drop a `.pptx` proposal in or paste a public Google Slides share link. Get back a
+slide-by-slide list of typos, blurry images,
 distorted images, and sizing that is *almost* consistent but not quite — including
 typos rendered **inside** mockup screenshots, where no spell-checker ever looks.
 
@@ -8,18 +9,15 @@ Built for checking client proposals before they are submitted.
 
 ---
 
-## Two passes
+## One combined analysis
 
-**1. Rule checks — instant, free, offline.**
-The `.pptx` is unzipped and parsed *in your browser*. Nothing is uploaded. Runs in
-under a second on a 143MB, 56-slide deck.
+The `.pptx` is unzipped and parsed *in your browser*. Local rule checks start
+while AI text and image checks run concurrently, then all findings merge into
+one result set. One upload, one progress bar, no second analysis click.
 
-**2. AI deep check — opt-in, free providers.**
-Sends slide text and downscaled copies of the mockup images to any
-OpenAI-compatible endpoint. Reads the text rendered inside each image and
-proofreads the whole deck in context.
-
-The rule pass is the default. The AI pass is a button.
+When no AI provider is configured, the same flow finishes with local rules only.
+Local `.pptx` files never leave the browser; AI receives only extracted text and
+downscaled copies of qualifying mockup images.
 
 ---
 
@@ -100,8 +98,8 @@ the exact shape. `←` / `→` walk the deck.
 
 Search filters the list; it never changes the verdict or the counters. Every fix
 suggestion has a one-click **copy**. Light and dark themes, remembered. When a provider
-is configured the AI pass starts automatically as soon as the deck is parsed; the button
-re-runs it, and disables itself with a reason when no provider is set.
+is configured, local rules plus AI text and vision checks run as one automatic analysis;
+the button only re-runs AI, and disables itself with a reason when no provider is set.
 
 An AI run on an image-heavy deck is 60–100 requests, so it is **cancellable** — stopping
 keeps every finding collected up to that point.
@@ -114,6 +112,11 @@ keeps every finding collected up to that point.
 npm install
 npm run dev            # http://localhost:3000
 ```
+
+Use either a local `.pptx` file or a standard Google Slides share link. Google
+Slides imports must be viewable by anyone with the link and allow downloads. The
+server streams Google's PowerPoint export into the browser, then the existing
+parser and combined local + AI analysis run unchanged.
 
 Rule checks need no configuration. For the AI pass, copy `.env.example` to
 `.env.local` and pick a provider:
@@ -163,6 +166,7 @@ navigation, search, highlighting, console errors. Needs the dev server running.
 ```bash
 npm run dev
 npm run verify:ui -- "proposal.pptx"
+npm run verify:google -- "https://docs.google.com/presentation/d/.../edit"
 ```
 
 Uses `puppeteer-core` against an already-installed Chrome or Edge; it does not download
@@ -195,7 +199,9 @@ Deploys to Vercel as-is. Set `AI_PROVIDER` and `AI_API_KEY` as environment
 variables — they are read server-side only and never reach the browser. All
 supported providers are hosted, so nothing depends on a machine-local endpoint.
 
-The deck itself is never uploaded. Only the AI pass sends data, and only:
+Local `.pptx` files are never uploaded. A Google Slides link is fetched through
+the import route and streamed to the browser without persistent storage. The AI
+pass sends only:
 
 - the extracted slide text, in one request;
 - each qualifying image, re-encoded to JPEG at ≤1400px on the long edge, one per
@@ -204,7 +210,7 @@ The deck itself is never uploaded. Only the AI pass sends data, and only:
 Images are deduplicated by file + crop before being sent: a logo reused on 30
 slides is one request, and a typo found inside it is reported on all 30.
 
-Both API routes set `maxDuration = 300`.
+The analysis and Google Slides import routes set `maxDuration = 300`.
 
 ---
 

@@ -1,4 +1,4 @@
-import { unzipSync, strFromU8 } from "fflate";
+import { Unzip, UnzipInflate, unzipSync, strFromU8 } from "fflate";
 import { readImageHeader } from "./imageHeader";
 import {
   applyClrMap,
@@ -45,35 +45,230 @@ interface LayoutLayer {
   showsMasterShapes: boolean;
 }
 
+type PptxFiles = Record<string, Uint8Array<ArrayBuffer>>;
+
+const wantedPptxEntry = (name: string) =>
+  name === "ppt/presentation.xml" ||
+  name === "ppt/_rels/presentation.xml.rels" ||
+  name.startsWith("ppt/theme/") ||
+  name.startsWith("ppt/media/") ||
+  /^ppt\/slide(Layout|Master)s\/[^/]+\.xml$/.test(name) ||
+  /^ppt\/slide(Layout|Master)s\/_rels\/[^/]+\.rels$/.test(name) ||
+  /^ppt\/slides\/slide\d+\.xml$/.test(name) ||
+  /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/.test(name);
+
+const STREAM_IMAGE_THRESHOLD = 750 * 1024;
+const STREAM_IMAGE_MAX_EDGE = 1800;
+
 export function parsePptx(buf: ArrayBuffer): Deck {
-  const wanted = (name: string) =>
-    name === "ppt/presentation.xml" ||
-    name === "ppt/_rels/presentation.xml.rels" ||
-    name.startsWith("ppt/theme/") ||
-    name.startsWith("ppt/media/") ||
-    /^ppt\/slide(Layout|Master)s\/[^/]+\.xml$/.test(name) ||
-    /^ppt\/slide(Layout|Master)s\/_rels\/[^/]+\.rels$/.test(name) ||
-    /^ppt\/slides\/slide\d+\.xml$/.test(name) ||
-    /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/.test(name);
+  const files = unzipSync(new Uint8Array(buf), { filter: (file) => wantedPptxEntry(file.name) });
+  return parsePptxFiles(files);
+}
 
-  const files = unzipSync(new Uint8Array(buf), { filter: (f) => wanted(f.name) });
-
+/**
+ * Parses a PPTX while it downloads. Google exports can exceed 100MB; streaming
+ * avoids retaining the complete ZIP Blob and another full ArrayBuffer before
+ * extraction starts, which is especially important in mobile browsers.
+ */
+export async function parsePptxStream(
+  stream: ReadableStream<Uint8Array>,
+  onProgress?: (loaded: number) => void,
+): Promise<Deck> {
+  const files: PptxFiles = {};
   const media = new Map<string, MediaInfo>();
   const blobs = new Map<string, Blob>();
-  for (const [path, bytes] of Object.entries(files)) {
+  const reader = stream.getReader();
+  let activeFiles = 0;
+  let inputDone = false;
+  let settled = false;
+  let loaded = 0;
+  let mediaWork = Promise.resolve();
+  let resolveDone!: () => void;
+  let rejectDone!: (reason: unknown) => void;
+
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+  const fail = (error: unknown) => {
+    if (settled) return;
+    settled = true;
+    void reader.cancel(error).catch(() => undefined);
+    rejectDone(error);
+  };
+  const finishIfReady = () => {
+    if (!settled && inputDone && activeFiles === 0) {
+      settled = true;
+      resolveDone();
+    }
+  };
+
+  const unzip = new Unzip((file) => {
+    if (!wantedPptxEntry(file.name)) return;
+
+    activeFiles++;
+    const target = file.originalSize === undefined ? null : new Uint8Array(file.originalSize);
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    let offset = 0;
+    let fileDone = false;
+
+    file.ondata = (error, chunk, final) => {
+      if (fileDone) return;
+      if (error) {
+        fileDone = true;
+        activeFiles--;
+        fail(error);
+        return;
+      }
+
+      if (target) target.set(chunk, offset);
+      else chunks.push(chunk);
+      offset += chunk.byteLength;
+
+      if (!final) return;
+      fileDone = true;
+      let bytes: Uint8Array<ArrayBuffer>;
+      if (target) {
+        bytes = offset === target.byteLength ? target : target.slice(0, offset);
+      } else {
+        const joined = new Uint8Array(offset);
+        let cursor = 0;
+        for (const part of chunks) {
+          joined.set(part, cursor);
+          cursor += part.byteLength;
+        }
+        bytes = joined;
+      }
+      if (file.name.startsWith("ppt/media/")) {
+        mediaWork = mediaWork
+          .then(() => addStreamMedia(file.name, bytes, media, blobs))
+          .then(() => {
+            activeFiles--;
+            finishIfReady();
+          });
+      } else {
+        files[file.name] = bytes;
+        activeFiles--;
+        finishIfReady();
+      }
+    };
+
+    try {
+      file.start();
+    } catch (error) {
+      fileDone = true;
+      activeFiles--;
+      fail(error);
+    }
+  });
+  unzip.register(UnzipInflate);
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        unzip.push(new Uint8Array(), true);
+        await mediaWork;
+        inputDone = true;
+        finishIfReady();
+        break;
+      }
+      loaded += value.byteLength;
+      onProgress?.(loaded);
+      unzip.push(value);
+      // Keep at most one decoded image in flight. Without this backpressure a
+      // fast network can queue the full deck's media before transcoding starts.
+      await mediaWork;
+    }
+  } catch (error) {
+    fail(error);
+  }
+
+  await completion;
+  return parsePptxFiles(files, { media, blobs });
+}
+
+function addMedia(
+  path: string,
+  bytes: Uint8Array<ArrayBuffer>,
+  media: Map<string, MediaInfo>,
+  blobs: Map<string, Blob>,
+) {
+  const head = readImageHeader(bytes);
+  media.set(path, {
+    path,
+    bytes: bytes.length,
+    width: head.width,
+    height: head.height,
+    format: path.toLowerCase().endsWith(".svg") ? "svg" : head.format,
+    mediaType: head.mediaType,
+  });
+  blobs.set(path, new Blob([bytes], { type: head.mediaType }));
+}
+
+async function addStreamMedia(
+  path: string,
+  bytes: Uint8Array<ArrayBuffer>,
+  media: Map<string, MediaInfo>,
+  blobs: Map<string, Blob>,
+) {
+  const head = readImageHeader(bytes);
+  const original = new Blob([bytes], { type: head.mediaType });
+  let display = original;
+
+  const canOptimize =
+    bytes.byteLength >= STREAM_IMAGE_THRESHOLD &&
+    head.width > 0 &&
+    head.height > 0 &&
+    head.format !== "gif" &&
+    head.format !== "svg" &&
+    head.format !== "unknown";
+  if (canOptimize) {
+    try {
+      const bitmap = await createImageBitmap(original);
+      try {
+        const scale = Math.min(1, STREAM_IMAGE_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+        const width = Math.max(1, Math.round(bitmap.width * scale));
+        const height = Math.max(1, Math.round(bitmap.height * scale));
+        const canvas = new OffscreenCanvas(width, height);
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("Canvas is unavailable.");
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = "high";
+        context.drawImage(bitmap, 0, 0, width, height);
+        display = await canvas.convertToBlob({ type: "image/webp", quality: 0.92 });
+      } finally {
+        bitmap.close();
+      }
+    } catch {
+      // Unsupported image formats keep their original bytes.
+    }
+  }
+
+  media.set(path, {
+    path,
+    bytes: bytes.length,
+    width: head.width,
+    height: head.height,
+    format: path.toLowerCase().endsWith(".svg") ? "svg" : head.format,
+    mediaType: head.mediaType,
+  });
+  blobs.set(path, display);
+}
+
+function parsePptxFiles(
+  files: PptxFiles,
+  existing?: { media: Map<string, MediaInfo>; blobs: Map<string, Blob> },
+): Deck {
+  const media = existing?.media ?? new Map<string, MediaInfo>();
+  const blobs = existing?.blobs ?? new Map<string, Blob>();
+  for (const path of Object.keys(files)) {
     if (!path.startsWith("ppt/media/")) continue;
-    const head = readImageHeader(bytes);
-    media.set(path, {
-      path,
-      bytes: bytes.length,
-      width: head.width,
-      height: head.height,
-      format: path.toLowerCase().endsWith(".svg") ? "svg" : head.format,
-      mediaType: head.mediaType,
-    });
+    const bytes = files[path];
     // Hand the array straight to the Blob; fflate gives each entry its own
     // buffer, so there is nothing to alias and no reason to copy 140MB twice.
-    blobs.set(path, new Blob([bytes], { type: head.mediaType }));
+    addMedia(path, bytes, media, blobs);
+    delete files[path];
   }
 
   const parser = new DOMParser();
