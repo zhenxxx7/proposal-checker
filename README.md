@@ -99,8 +99,9 @@ at a time), the reconstructed slide, and the findings on it. Clicking a finding 
 the exact shape. `←` / `→` walk the deck.
 
 Search filters the list; it never changes the verdict or the counters. Every fix
-suggestion has a one-click **copy**. Light and dark themes, remembered. The AI button
-disables itself with a reason when no provider is configured, instead of failing on click.
+suggestion has a one-click **copy**. Light and dark themes, remembered. When a provider
+is configured the AI pass starts automatically as soon as the deck is parsed; the button
+re-runs it, and disables itself with a reason when no provider is set.
 
 An AI run on an image-heavy deck is 60–100 requests, so it is **cancellable** — stopping
 keeps every finding collected up to that point.

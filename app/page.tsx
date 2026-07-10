@@ -36,6 +36,9 @@ export default function Page() {
   const [progress, setProgress] = useState({ done: 0, total: 0, label: "" });
   const [status, setStatus] = useState<Status | null>(null);
   const [aiDone, setAiDone] = useState(false);
+  // Fires the AI pass once per deck automatically; distinct from aiDone so a
+  // failed run doesn't retrigger the effect into an infinite retry loop.
+  const [aiAuto, setAiAuto] = useState(false);
   const [abort, setAbort] = useState<AbortController | null>(null);
 
   const [slide, setSlide] = useState(1);
@@ -76,6 +79,7 @@ export default function Page() {
     setDeck(null);
     setUrls(new Map());
     setAiDone(false);
+    setAiAuto(false);
     setActive(null);
     setQuery("");
     setFileName(file.name);
@@ -133,6 +137,16 @@ export default function Page() {
       setProgress({ done: 0, total: 0, label: "" });
     }
   }, [deck, imageJobs]);
+
+  // Auto-run the AI pass the moment a deck is parsed and a provider is
+  // configured, so one drop yields rule + AI findings with no extra click.
+  // aiAuto latches per deck (reset in load) so an AI error won't loop.
+  useEffect(() => {
+    if (phase === "ready" && !aiAuto && !abort && status?.configured && deck) {
+      setAiAuto(true);
+      runAi();
+    }
+  }, [phase, aiAuto, abort, status, deck, runAi]);
 
   const matches = useCallback(
     (f: Finding) => {
