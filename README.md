@@ -45,7 +45,6 @@ internally-capitalised form.
 | Check | Severity |
 |---|---|
 | Effective resolution below 96 DPI — image is upscaled, will look blurry | blocking |
-| Effective resolution 96–150 DPI — soft when printed or projected | review |
 | Aspect distorted >5% (stretched/squashed) | blocking |
 | Aspect distorted 2–5% | review |
 | Side-by-side images with near-identical size that don't match (off by 1–8%) | review |

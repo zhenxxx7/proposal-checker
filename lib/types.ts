@@ -37,7 +37,6 @@ export type Code =
   | "style.font-drift"
   | "text.low-contrast"
   | "img.upscaled"
-  | "img.low-dpi"
   | "img.distorted"
   | "img.oversized"
   | "img.sibling-size"

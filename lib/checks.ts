@@ -413,19 +413,6 @@ function imageChecks(deck: Deck, slide: number, pics: PicShape[]): Finding[] {
           shapeIds: [pic.id],
         }),
       );
-    } else if (dpi < 150) {
-      out.push(
-        mk({
-          code: "img.low-dpi",
-          slide,
-          severity: "warn",
-          category: "resolution",
-          title: `${name(pic)} is soft when printed`,
-          detail: `${Math.round(eff.vis.w)}×${Math.round(eff.vis.h)}px shown at ${dim(pic)} — ${dpi} DPI. Fine on a screen, soft on paper or a projector.`,
-          suggestion: `Re-export at ≥ ${target}.`,
-          shapeIds: [pic.id],
-        }),
-      );
     }
 
     // Only judge distortion on images large enough for it to be visible.

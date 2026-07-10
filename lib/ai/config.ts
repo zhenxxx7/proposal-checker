@@ -18,7 +18,10 @@ interface Preset {
 const PRESETS: Record<Exclude<Provider, "custom">, Preset> = {
   gemini: {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    model: "gemini-2.5-flash",
+    // Paid tier default: the stronger vision model. Free tier still works but
+    // Pro caps requests-per-minute lower than flash — override AI_MODEL to
+    // gemini-2.5-flash if throughput matters more than reasoning quality.
+    model: "gemini-2.5-pro",
     label: "Gemini",
   },
   openrouter: {

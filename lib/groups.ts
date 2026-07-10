@@ -98,13 +98,6 @@ const DEFS: Def[] = [
     why: "A few pixels off. Reads as sloppy even if nobody can name why.",
   },
   {
-    key: "soft",
-    icon: "🖨️",
-    codes: ["img.low-dpi"],
-    title: (n) => plural(n, "An image is soft when printed", "{n} images are soft when printed"),
-    why: "Fine on screen, mushy on paper. Only matters if this gets printed.",
-  },
-  {
     key: "spacing",
     icon: "␣",
     codes: [
