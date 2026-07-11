@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Dropzone, type GoogleSlidesStream } from "@/components/Dropzone";
+import { Dropzone, type GoogleSlidesImport } from "@/components/Dropzone";
 import { FindingCard } from "@/components/FindingCard";
 import { SlidePreview } from "@/components/SlidePreview";
 import { SlideRail, countBySlide } from "@/components/SlideRail";
@@ -11,7 +11,7 @@ import { analyzeImages, analyzeText, selectImageJobs } from "@/lib/aiClient";
 import { collectFamilies, googleFontsUrl } from "@/lib/fonts";
 import { runRuleChecks } from "@/lib/checks";
 import { groupFindings } from "@/lib/groups";
-import { parsePptx, parsePptxStream } from "@/lib/pptx";
+import { parsePptx } from "@/lib/pptx";
 import { bySeverity, download, toMarkdown } from "@/lib/report";
 import type { Deck, Finding } from "@/lib/types";
 
@@ -212,8 +212,7 @@ export default function Page() {
     [loadDeck],
   );
   const loadGoogleSlides = useCallback(
-    (source: GoogleSlidesStream) =>
-      loadDeck(source.name, () => parsePptxStream(source.stream, source.reportProgress)),
+    (source: GoogleSlidesImport) => loadDeck(source.name, () => Promise.resolve(source.deck)),
     [loadDeck],
   );
 

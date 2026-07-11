@@ -10,14 +10,17 @@
     "check": "tsx scripts/check.ts",
     "verify:ui": "node scripts/verify-ui.mjs",
     "verify:google": "node scripts/verify-google-slides.mjs",
+    "verify:server-import": "tsx scripts/verify-server-import.ts",
     "verify:ai": "node scripts/verify-ai.mjs",
     "mock:ai": "node scripts/mock-ai.mjs"
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.10",
     "fflate": "^0.8.3",
     "next": "16.2.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "sharp": "^0.34.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -25,7 +28,6 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@xmldom/xmldom": "^0.9.10",
     "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",

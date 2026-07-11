@@ -47,13 +47,56 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 const consoleErrors = [];
 const failedRequests = [];
+const importRequests = [];
+const directSourceRequests = [];
+let importResponse = null;
+const appOrigin = new URL(appUrl).origin;
 page.on("console", (message) => message.type() === "error" && consoleErrors.push(message.text()));
 page.on("pageerror", (error) => consoleErrors.push(String(error)));
+page.on("request", (request) => {
+  const url = new URL(request.url());
+  if (url.pathname === "/api/import-google-slides") {
+    importRequests.push({ method: request.method(), origin: url.origin });
+  }
+  if (
+    url.hostname === "docs.google.com" ||
+    url.hostname === "drive.google.com" ||
+    url.hostname.endsWith(".googleusercontent.com")
+  ) {
+    directSourceRequests.push(request.url());
+  }
+});
+page.on("response", (response) => {
+  const url = new URL(response.url());
+  if (url.pathname === "/api/import-google-slides") {
+    importResponse = { status: response.status(), headers: response.headers(), origin: url.origin };
+  }
+});
 page.on("requestfailed", (request) => failedRequests.push(`${request.url()} · ${request.failure()?.errorText ?? "failed"}`));
 
 console.log("\n1. Paste Google Slides link");
 await page.goto(appUrl, { waitUntil: "networkidle0" });
 await page.type("[data-google-slides-url]", shareUrl);
+await page.evaluate(() => {
+  const trace = [];
+  Object.defineProperty(window, "__googleImportTrace", { configurable: true, value: trace });
+  const record = () => {
+    const progress = document.querySelector('[role="progressbar"]');
+    trace.push({
+      status: document.querySelector('[role="status"]')?.textContent?.trim() ?? "",
+      progressLabel: progress?.getAttribute("aria-label") ?? "",
+      progressNow: Number(progress?.getAttribute("aria-valuenow")),
+      progressMax: Number(progress?.getAttribute("aria-valuemax")),
+    });
+  };
+  new MutationObserver(record).observe(document.body, {
+    attributes: true,
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+  record();
+});
 await page.$$eval("button", (buttons) => buttons.find((button) => button.textContent?.trim() === "Import")?.click());
 
 console.log("\n2. Import and parse exported PPTX");
@@ -90,11 +133,38 @@ try {
   throw error;
 }
 await wait(500);
+const importTrace = await page.evaluate(() => window.__googleImportTrace ?? []);
+expect(
+  importTrace.some(({ status }) => /^Downloading Google Slides\.\.\./i.test(status)),
+  "download state is shown while Google Slides imports",
+);
+expect(
+  importTrace.some(
+    ({ status, progressLabel, progressNow, progressMax }) =>
+      (/^Downloading Google Slides\.\.\. (?:\d+%|\d+(?:\.\d+)? (?:KB|MB))$/i.test(status) ||
+        (progressLabel === "Download progress" && progressNow >= 0 && progressMax > 0)),
+  ),
+  "live download progress is rendered",
+);
+expect(importTrace.every(({ status }) => !/Server is/i.test(status)), "removed 'Server is' text never appears");
 const header = await page.$eval("header", (element) => element.innerText.replace(/\n/g, " "));
 expect(/\.pptx\s+·\s+\d+ slides/i.test(header), `deck loaded: ${header}`);
 
 const slideCount = Number(header.match(/·\s+(\d+) slides/i)?.[1] ?? 0);
 expect(slideCount > 0, `${slideCount} slides parsed`);
+expect(
+  importRequests.length === 1 && importRequests[0].method === "POST" && importRequests[0].origin === appOrigin,
+  "browser sends one same-origin import request",
+);
+expect(directSourceRequests.length === 0, "browser never downloads Google source file directly");
+expect(importResponse?.status === 200 && importResponse.origin === appOrigin, "server import handler returns processed deck");
+expect(importResponse?.headers["x-download-handler"] === "server", "download is owned by server handler");
+expect(importResponse?.headers["x-deck-transfer"] === "stream-v1", "browser receives streaming deck protocol");
+expect(
+  /^application\/x-proposal-deck-stream(?:;|$)/i.test(importResponse?.headers["content-type"] ?? "") &&
+    !/officedocument\.presentationml/i.test(importResponse?.headers["content-type"] ?? ""),
+  "browser response is a processed framed stream, not raw PPTX",
+);
 
 console.log("\n3. Open reconstructed slide view");
 await page.$$eval("header button", (buttons) => buttons.find((button) => button.textContent?.trim() === "slides")?.click());

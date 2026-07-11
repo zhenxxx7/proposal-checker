@@ -46,6 +46,7 @@ interface LayoutLayer {
 }
 
 type PptxFiles = Record<string, Uint8Array<ArrayBuffer>>;
+export type XmlParser = Pick<DOMParser, "parseFromString">;
 
 const wantedPptxEntry = (name: string) =>
   name === "ppt/presentation.xml" ||
@@ -60,9 +61,9 @@ const wantedPptxEntry = (name: string) =>
 const STREAM_IMAGE_THRESHOLD = 750 * 1024;
 const STREAM_IMAGE_MAX_EDGE = 1800;
 
-export function parsePptx(buf: ArrayBuffer): Deck {
+export function parsePptx(buf: ArrayBuffer, parser: XmlParser = new DOMParser()): Deck {
   const files = unzipSync(new Uint8Array(buf), { filter: (file) => wantedPptxEntry(file.name) });
-  return parsePptxFiles(files);
+  return parsePptxFiles(files, undefined, parser);
 }
 
 /**
@@ -72,7 +73,8 @@ export function parsePptx(buf: ArrayBuffer): Deck {
  */
 export async function parsePptxStream(
   stream: ReadableStream<Uint8Array>,
-  onProgress?: (loaded: number) => void,
+  onProgress?: (loaded: number) => void | Promise<void>,
+  parser: XmlParser = new DOMParser(),
 ): Promise<Deck> {
   const files: PptxFiles = {};
   const media = new Map<string, MediaInfo>();
@@ -174,7 +176,7 @@ export async function parsePptxStream(
         break;
       }
       loaded += value.byteLength;
-      onProgress?.(loaded);
+      await onProgress?.(loaded);
       unzip.push(value);
       // Keep at most one decoded image in flight. Without this backpressure a
       // fast network can queue the full deck's media before transcoding starts.
@@ -185,7 +187,7 @@ export async function parsePptxStream(
   }
 
   await completion;
-  return parsePptxFiles(files, { media, blobs });
+  return parsePptxFiles(files, { media, blobs }, parser);
 }
 
 function addMedia(
@@ -217,6 +219,8 @@ async function addStreamMedia(
   let display = original;
 
   const canOptimize =
+    typeof createImageBitmap === "function" &&
+    typeof OffscreenCanvas === "function" &&
     bytes.byteLength >= STREAM_IMAGE_THRESHOLD &&
     head.width > 0 &&
     head.height > 0 &&
@@ -259,6 +263,7 @@ async function addStreamMedia(
 function parsePptxFiles(
   files: PptxFiles,
   existing?: { media: Map<string, MediaInfo>; blobs: Map<string, Blob> },
+  parser: XmlParser = new DOMParser(),
 ): Deck {
   const media = existing?.media ?? new Map<string, MediaInfo>();
   const blobs = existing?.blobs ?? new Map<string, Blob>();
@@ -271,7 +276,6 @@ function parsePptxFiles(
     delete files[path];
   }
 
-  const parser = new DOMParser();
   const xml = (path: string) => parser.parseFromString(strFromU8(files[path]), "application/xml");
 
   const pres = xml("ppt/presentation.xml");

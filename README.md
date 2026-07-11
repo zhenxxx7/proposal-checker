@@ -115,9 +115,11 @@ npm run dev            # http://localhost:3000
 ```
 
 Use either a local `.pptx` file or a standard Google Slides share link. Google
-Slides imports must be viewable by anyone with the link and allow downloads. The
-server streams Google's PowerPoint export into the browser, then the existing
-parser and combined local + AI analysis run unchanged.
+Slides imports must be viewable by anyone with the link and allow downloads. A
+serverless Node handler downloads and parses Google's PowerPoint export, removes
+unused media, and downscales large preview images. It streams live download and
+preparation progress back to the page; the browser receives processed slide data,
+never the raw `.pptx` file.
 
 Rule checks need no configuration. For the AI pass, copy `.env.example` to
 `.env.local` and pick a provider:
@@ -168,6 +170,7 @@ navigation, search, highlighting, console errors. Needs the dev server running.
 npm run dev
 npm run verify:ui -- "proposal.pptx"
 npm run verify:google -- "https://docs.google.com/presentation/d/.../edit"
+npm run verify:server-import -- "proposal.pptx"
 ```
 
 Uses `puppeteer-core` against an already-installed Chrome or Edge; it does not download
@@ -200,9 +203,10 @@ Deploys to Vercel as-is. Set `AI_PROVIDER` and `AI_API_KEY` as environment
 variables — they are read server-side only and never reach the browser. All
 supported providers are hosted, so nothing depends on a machine-local endpoint.
 
-Local `.pptx` files are never uploaded. A Google Slides link is fetched through
-the import route and streamed to the browser without persistent storage. The AI
-pass sends only:
+Local `.pptx` files are never uploaded. For a Google Slides link, one serverless
+request downloads and parses the raw export in memory; no file, database record,
+or durable server state is created. The browser receives only structured slide
+data and referenced, size-reduced preview assets. The AI pass sends only:
 
 - the extracted slide text, in one request;
 - each qualifying image, re-encoded to JPEG at ≤1400px on the long edge, one per
@@ -217,8 +221,10 @@ The analysis and Google Slides import routes set `maxDuration = 300`.
 
 ## Notes and limits
 
-- **Parsing is main-thread.** `DOMParser` does not exist in a Web Worker, so a
-  143MB deck blocks the UI for roughly a second. Measured: 757ms parse, 13ms checks.
+- **Local-file parsing is main-thread.** `DOMParser` does not exist in a Web
+  Worker, so a 143MB local deck blocks the UI for roughly a second. Measured:
+  757ms parse, 13ms checks. Google Slides exports are parsed in the serverless
+  import handler instead.
 - **The slide preview reconstructs the complete visual stack.** It renders the
   slide background plus visual shapes inherited from the layout and master, so
   branded panels, footer bars, and master logos stay visible. Theme colours,

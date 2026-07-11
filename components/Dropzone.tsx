@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { deckFromResponse, type ImportProgress } from "@/lib/deckWire";
+import type { Deck } from "@/lib/types";
 import { Button, Card } from "./ui";
 
 const CHECKS = [
@@ -12,17 +14,22 @@ const CHECKS = [
   ["🖼️", "Text inside mockups", "AI reads the screenshots (optional)"],
 ] as const;
 
-export interface GoogleSlidesStream {
+export interface GoogleSlidesImport {
   name: string;
-  stream: ReadableStream<Uint8Array>;
-  total: number | null;
-  reportProgress: (loaded: number) => void;
+  deck: Deck;
 }
 
 interface AnalysisProgress {
   done: number;
   total: number;
   label: string;
+}
+
+interface VisibleProgress {
+  done: number;
+  total: number | null;
+  text: string;
+  ariaLabel: string;
 }
 
 export function Dropzone({
@@ -36,7 +43,7 @@ export function Dropzone({
   analysis?: AnalysisProgress | null;
   onCancel?: () => void;
   onFile: (file: File) => void | Promise<void>;
-  onGoogleSlides: (source: GoogleSlidesStream) => void | Promise<void>;
+  onGoogleSlides: (source: GoogleSlidesImport) => void | Promise<void>;
 }) {
   const [over, setOver] = useState(false);
   const [rejected, setRejected] = useState(false);
@@ -44,6 +51,7 @@ export function Dropzone({
   const [linkError, setLinkError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importStatus, setImportStatus] = useState("Connecting to Google Slides...");
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
   const working = busy || importing;
 
   const take = (f: File | undefined) => {
@@ -67,7 +75,8 @@ export function Dropzone({
     }
 
     setImporting(true);
-    setImportStatus("Connecting to Google Slides...");
+    setImportStatus("Downloading Google Slides...");
+    setImportProgress(null);
     setLinkError(null);
     try {
       const response = await fetch("/api/import-google-slides", {
@@ -80,36 +89,49 @@ export function Dropzone({
         throw new Error(result?.error ?? "Could not import this Google Slides link.");
       }
 
-      const totalHeader = Number(response.headers.get("content-length"));
-      const total = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : null;
-      const encodedName = response.headers.get("x-file-name");
-      let name = "Google Slides presentation.pptx";
-      try {
-        if (encodedName) name = decodeURIComponent(encodedName);
-      } catch {
-        // Keep the fallback name.
-      }
-      if (!response.body) throw new Error("Google Slides returned an empty presentation.");
-
-      setImportStatus("Downloading and reading Google Slides...");
-      await onGoogleSlides({
-        name,
-        stream: response.body,
-        total,
-        reportProgress: (loaded) => {
-          setImportStatus(
-            total
-              ? `Downloading and reading... ${Math.min(100, Math.round((loaded / total) * 100))}%`
-              : `Downloading and reading... ${formatBytes(loaded)}`,
-          );
-        },
+      const imported = await deckFromResponse(response, (progress) => {
+        if (progress.phase === "prepare") {
+          setImportProgress(progress);
+          setImportStatus("Preparing Google Slides...");
+          return;
+        }
+        setImportProgress(progress);
+        const percent = progress.total && progress.total > 0
+          ? Math.min(100, Math.round((progress.loaded / progress.total) * 100))
+          : null;
+        setImportStatus(
+          progress.phase === "download"
+            ? `Downloading Google Slides... ${percent === null ? formatBytes(progress.loaded) : `${percent}%`}`
+            : `Loading prepared slides... ${percent === null ? formatBytes(progress.loaded) : `${percent}%`}`,
+        );
       });
+      await onGoogleSlides({ name: imported.name, deck: imported.deck });
     } catch (error) {
       setLinkError(error instanceof Error ? error.message : "Could not import this Google Slides link.");
     } finally {
       setImporting(false);
+      setImportProgress(null);
     }
   };
+
+  const importTotal = importProgress?.total && importProgress.total > 0 ? importProgress.total : null;
+  const visibleProgress: VisibleProgress | null = analysis
+    ? {
+        done: Math.min(analysis.done, analysis.total),
+        total: analysis.total,
+        text: `${analysis.done}/${analysis.total} checks`,
+        ariaLabel: "Analysis progress",
+      }
+    : importProgress && importProgress.phase !== "prepare"
+      ? {
+          done: importTotal ? Math.min(importProgress.loaded, importTotal) : importProgress.loaded,
+          total: importTotal,
+          text: importTotal
+            ? `${Math.min(100, Math.round((importProgress.loaded / importTotal) * 100))}%`
+            : formatBytes(importProgress.loaded),
+          ariaLabel: importProgress.phase === "download" ? "Download progress" : "Processed slide loading progress",
+        }
+      : null;
 
   return (
     <div className="rise mx-auto w-full max-w-2xl py-6">
@@ -124,6 +146,7 @@ export function Dropzone({
         aria-busy={working}
         data-processing={working ? "" : undefined}
         data-analysis-progress={analysis ? "" : undefined}
+        data-download-progress={importProgress?.phase === "download" ? "" : undefined}
         onDragOver={(e) => {
           e.preventDefault();
           setOver(true);
@@ -150,24 +173,27 @@ export function Dropzone({
             <p role="status" aria-live="polite" className="text-base font-medium">
               {analysis?.label || (importing ? importStatus : "Reading and analyzing the deck...")}
             </p>
-            {analysis && analysis.total > 0 && (
+            {visibleProgress && (
               <div
                 role="progressbar"
-                aria-label="Analysis progress"
+                aria-label={visibleProgress.ariaLabel}
                 aria-valuemin={0}
-                aria-valuemax={analysis.total}
-                aria-valuenow={analysis.done}
+                aria-valuemax={visibleProgress.total ?? undefined}
+                aria-valuenow={visibleProgress.total ? visibleProgress.done : undefined}
+                aria-valuetext={visibleProgress.total ? undefined : visibleProgress.text}
                 className="w-full max-w-sm"
               >
                 <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
                   <div
-                    className="h-full bg-indigo-600 transition-all duration-300 dark:bg-indigo-400"
-                    style={{ width: `${Math.min(100, (analysis.done / analysis.total) * 100)}%` }}
+                    className={`h-full bg-indigo-600 dark:bg-indigo-400 ${
+                      visibleProgress.total ? "transition-all duration-300" : "w-1/3 animate-pulse"
+                    }`}
+                    style={visibleProgress.total
+                      ? { width: `${Math.min(100, (visibleProgress.done / visibleProgress.total) * 100)}%` }
+                      : undefined}
                   />
                 </div>
-                <p className="mt-1.5 text-xs tabular-nums text-zinc-500">
-                  {analysis.done}/{analysis.total} checks
-                </p>
+                <p className="mt-1.5 text-xs tabular-nums text-zinc-500">{visibleProgress.text}</p>
               </div>
             )}
             <p className="text-sm text-zinc-500">Keep this tab open while the presentation is prepared.</p>
@@ -272,6 +298,7 @@ const Spinner = () => (
 );
 
 function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 KB";
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
