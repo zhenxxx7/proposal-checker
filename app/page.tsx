@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dropzone, type GoogleSlidesStream } from "@/components/Dropzone";
 import { FindingCard } from "@/components/FindingCard";
 import { SlidePreview } from "@/components/SlidePreview";
@@ -49,6 +49,8 @@ export default function Page() {
   const [status, setStatus] = useState<Status | null>(null);
   const [aiDone, setAiDone] = useState(false);
   const [abort, setAbort] = useState<AbortController | null>(null);
+  const analysisRunning = useRef(false);
+  const deckLoading = useRef(false);
 
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
@@ -83,6 +85,8 @@ export default function Page() {
     jobs: ReturnType<typeof selectImageJobs>,
     includeRules: boolean,
   ) => {
+    if (analysisRunning.current) return;
+    analysisRunning.current = true;
     const controller = new AbortController();
     setAbort(controller);
     setPhase("ai");
@@ -115,41 +119,53 @@ export default function Page() {
         2,
         controller.signal,
       );
+      const localPromise = includeRules
+        ? Promise.resolve().then(() => {
+            const result = runRuleChecks(targetDeck);
+            localDone = 1;
+            report("Analyzing deck...");
+            return result;
+          })
+        : Promise.resolve<Finding[] | null>(null);
 
-      if (includeRules) {
-        setFindings(runRuleChecks(targetDeck));
-        localDone = 1;
-      } else {
-        setFindings((current) => current.filter((finding) => finding.source === "rule"));
-      }
-      report("Analyzing deck...");
-
-      const [textResult, imageResult] = await Promise.allSettled([textPromise, imagesPromise]);
+      const [localResult, textResult, imageResult] = await Promise.allSettled([
+        localPromise,
+        textPromise,
+        imagesPromise,
+      ]);
       const combined = [
         ...(textResult.status === "fulfilled" ? textResult.value : []),
         ...(imageResult.status === "fulfilled" ? imageResult.value : []),
       ];
-      setFindings((current) => [...current.filter((finding) => finding.source === "rule"), ...combined]);
+      const initialRules = localResult.status === "fulfilled" ? localResult.value : null;
+      setFindings((current) => [
+        ...(initialRules ?? current.filter((finding) => finding.source === "rule")),
+        ...combined,
+      ]);
 
-      const failure = textResult.status === "rejected"
-        ? textResult.reason
-        : imageResult.status === "rejected"
-          ? imageResult.reason
-          : null;
+      const failure = localResult.status === "rejected"
+        ? localResult.reason
+        : textResult.status === "rejected"
+          ? textResult.reason
+          : imageResult.status === "rejected"
+            ? imageResult.reason
+            : null;
       if (failure && !controller.signal.aborted) {
-        setError(failure instanceof Error ? failure.message : "AI check partly failed.");
+        setError(failure instanceof Error ? failure.message : "Analysis partly failed.");
       }
-      if (!controller.signal.aborted) setAiDone(true);
+      if (!failure && !controller.signal.aborted) setAiDone(true);
     } catch (e) {
       if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "AI check failed.");
     } finally {
+      analysisRunning.current = false;
       setAbort(null);
-      setPhase("ready");
       setProgress({ done: 0, total: 0, label: "" });
     }
   }, []);
 
   const loadDeck = useCallback(async (name: string, readDeck: () => Promise<Deck>) => {
+    if (deckLoading.current) return;
+    deckLoading.current = true;
     setPhase("parsing");
     setError(null);
     setFindings([]);
@@ -167,11 +183,6 @@ export default function Page() {
       // must not leave automatic AI analysis disabled for the whole session.
       const [parsed, providerStatus] = await Promise.all([readDeck(), fetchAiStatus()]);
       setStatus(providerStatus);
-
-      const next = new Map<string, string>();
-      for (const [path, blob] of parsed.blobs) next.set(path, URL.createObjectURL(blob));
-      setUrls(next);
-      setDeck(parsed);
       setSlide(1);
       setView("summary");
 
@@ -179,11 +190,20 @@ export default function Page() {
         await runCombined(parsed, selectImageJobs(parsed), true);
       } else {
         setFindings(runRuleChecks(parsed));
-        setPhase("ready");
       }
+
+      // Reveal deck only after combined result is ready. This keeps upload,
+      // local rules, and AI behind one continuous processing state.
+      const next = new Map<string, string>();
+      for (const [path, blob] of parsed.blobs) next.set(path, URL.createObjectURL(blob));
+      setUrls(next);
+      setDeck(parsed);
+      setPhase("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not read that file.");
       setPhase("idle");
+    } finally {
+      deckLoading.current = false;
     }
   }, [runCombined]);
 
@@ -199,7 +219,9 @@ export default function Page() {
 
   const imageJobs = useMemo(() => (deck ? selectImageJobs(deck) : []), [deck]);
   const rerunAi = useCallback(() => {
-    if (deck) void runCombined(deck, imageJobs, false);
+    if (deck && !analysisRunning.current) {
+      void runCombined(deck, imageJobs, false).finally(() => setPhase("ready"));
+    }
   }, [deck, imageJobs, runCombined]);
 
   const matches = useCallback(
@@ -335,7 +357,13 @@ export default function Page() {
         )}
 
         {!deck && (
-          <Dropzone busy={phase === "parsing"} onFile={load} onGoogleSlides={loadGoogleSlides} />
+          <Dropzone
+            busy={phase === "parsing" || phase === "ai"}
+            analysis={phase === "ai" ? progress : null}
+            onCancel={phase === "ai" && abort ? () => abort.abort() : undefined}
+            onFile={load}
+            onGoogleSlides={loadGoogleSlides}
+          />
         )}
 
         {deck && view === "summary" && (

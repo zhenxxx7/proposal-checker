@@ -71,9 +71,45 @@ const after = await page.evaluate(() => ({
 expect(after.dark === !before, `theme flips (${before ? "dark" : "light"} -> ${after.dark ? "dark" : "light"})`);
 expect(after.stored === (after.dark ? "dark" : "light"), `persisted to localStorage: ${after.stored}`);
 
-console.log("\n3. Upload the deck");
+// Hold the first AI request so the test can inspect the initial loading state.
+// Local findings must remain hidden until this request is released and all
+// analysis branches settle.
+let heldInitialAiRequest;
+let initialAiStarted;
+if (status.configured) {
+  let markInitialAiStarted;
+  initialAiStarted = new Promise((resolve) => {
+    markInitialAiStarted = resolve;
+  });
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (!heldInitialAiRequest && (path === "/api/analyze-text" || path === "/api/analyze-image")) {
+      heldInitialAiRequest = request;
+      markInitialAiStarted();
+      return;
+    }
+    void request.continue();
+  });
+}
+
+console.log("\n3. Upload and run one combined analysis");
 await (await page.$("input[type=file]")).uploadFile(deck);
-await page.waitForSelector("[data-readiness]", { timeout: 60000 });
+if (status.configured) {
+  const remoteWorkStarted = await Promise.race([
+    initialAiStarted.then(() => true),
+    page.waitForSelector("[data-readiness]", { timeout: 60000 }).then(() => false),
+  ]);
+  if (remoteWorkStarted) {
+    await page.waitForSelector("[data-analysis-progress]", { timeout: 60000 });
+    await wait(250);
+    expect((await page.$$('[data-readiness]')).length === 0, "no local-only result is revealed while AI runs");
+    expect((await page.$$('[data-stat]')).length === 0, "summary stays hidden until merged result is ready");
+    await page.screenshot({ path: "scripts/__processing.png" });
+    await heldInitialAiRequest.continue();
+  }
+}
+await page.waitForSelector("[data-readiness]", { timeout: 240000 });
 if (status.configured) {
   await page.waitForFunction(() => document.querySelector("header").innerText.includes("Re-run AI check"), {
     timeout: 240000,

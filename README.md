@@ -11,9 +11,10 @@ Built for checking client proposals before they are submitted.
 
 ## One combined analysis
 
-The `.pptx` is unzipped and parsed *in your browser*. Local rule checks start
-while AI text and image checks run concurrently, then all findings merge into
-one result set. One upload, one progress bar, no second analysis click.
+The `.pptx` is unzipped and parsed *in your browser*. After parsing, local rule
+checks and AI text/image checks start together. Results stay behind one progress
+screen until every branch settles, then appear once as one merged result set.
+One upload, one wait, no second analysis click.
 
 When no AI provider is configured, the same flow finishes with local rules only.
 Local `.pptx` files never leave the browser; AI receives only extracted text and

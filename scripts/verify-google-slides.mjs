@@ -32,6 +32,7 @@ const expect = (condition, message) => {
   if (!condition) failures++;
 };
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const status = await (await fetch(new URL("/api/status", appUrl))).json();
 
 const browser = await puppeteer.launch({
   executablePath: CHROME,
@@ -57,6 +58,16 @@ await page.$$eval("button", (buttons) => buttons.find((button) => button.textCon
 
 console.log("\n2. Import and parse exported PPTX");
 try {
+  if (status.configured) {
+    await page.waitForSelector("[data-analysis-progress]", { timeout: mobile || constrained ? 240000 : 120000 });
+    expect((await page.$$('[data-readiness]')).length === 0, "no local-only result appears before AI settles");
+    const cancelled = await page.$$eval("button", (buttons) => {
+      const button = buttons.find((candidate) => candidate.textContent?.includes("Cancel analysis"));
+      button?.click();
+      return !!button;
+    });
+    expect(cancelled, "combined analysis can be cancelled from processing screen");
+  }
   await page.waitForSelector("[data-readiness]", { timeout: mobile || constrained ? 240000 : 120000 });
 } catch (error) {
   const state = await page.evaluate(() => ({
@@ -84,15 +95,6 @@ expect(/\.pptx\s+·\s+\d+ slides/i.test(header), `deck loaded: ${header}`);
 
 const slideCount = Number(header.match(/·\s+(\d+) slides/i)?.[1] ?? 0);
 expect(slideCount > 0, `${slideCount} slides parsed`);
-
-const cancelled = await page.$$eval("header button", (buttons) => {
-  const button = buttons.find((candidate) => candidate.textContent?.includes("Cancel"));
-  button?.click();
-  return !!button;
-});
-if (cancelled) {
-  await page.waitForFunction(() => !document.querySelector("header")?.innerText.includes("Cancel"), { timeout: 30000 });
-}
 
 console.log("\n3. Open reconstructed slide view");
 await page.$$eval("header button", (buttons) => buttons.find((button) => button.textContent?.trim() === "slides")?.click());

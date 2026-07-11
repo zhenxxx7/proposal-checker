@@ -19,12 +19,22 @@ export interface GoogleSlidesStream {
   reportProgress: (loaded: number) => void;
 }
 
+interface AnalysisProgress {
+  done: number;
+  total: number;
+  label: string;
+}
+
 export function Dropzone({
   busy,
+  analysis,
+  onCancel,
   onFile,
   onGoogleSlides,
 }: {
   busy: boolean;
+  analysis?: AnalysisProgress | null;
+  onCancel?: () => void;
   onFile: (file: File) => void | Promise<void>;
   onGoogleSlides: (source: GoogleSlidesStream) => void | Promise<void>;
 }) {
@@ -111,6 +121,9 @@ export function Dropzone({
       </div>
 
       <label
+        aria-busy={working}
+        data-processing={working ? "" : undefined}
+        data-analysis-progress={analysis ? "" : undefined}
         onDragOver={(e) => {
           e.preventDefault();
           setOver(true);
@@ -134,7 +147,29 @@ export function Dropzone({
         {working ? (
           <>
             <Spinner />
-            <p className="text-base font-medium">{importing ? importStatus : "Reading the deck..."}</p>
+            <p role="status" aria-live="polite" className="text-base font-medium">
+              {analysis?.label || (importing ? importStatus : "Reading and analyzing the deck...")}
+            </p>
+            {analysis && analysis.total > 0 && (
+              <div
+                role="progressbar"
+                aria-label="Analysis progress"
+                aria-valuemin={0}
+                aria-valuemax={analysis.total}
+                aria-valuenow={analysis.done}
+                className="w-full max-w-sm"
+              >
+                <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+                  <div
+                    className="h-full bg-indigo-600 transition-all duration-300 dark:bg-indigo-400"
+                    style={{ width: `${Math.min(100, (analysis.done / analysis.total) * 100)}%` }}
+                  />
+                </div>
+                <p className="mt-1.5 text-xs tabular-nums text-zinc-500">
+                  {analysis.done}/{analysis.total} checks
+                </p>
+              </div>
+            )}
             <p className="text-sm text-zinc-500">Keep this tab open while the presentation is prepared.</p>
           </>
         ) : (
@@ -155,6 +190,12 @@ export function Dropzone({
           </>
         )}
       </label>
+
+      {working && onCancel && (
+        <div className="mt-3 flex justify-center">
+          <Button type="button" onClick={onCancel}>Cancel analysis</Button>
+        </div>
+      )}
 
       <div className="my-4 flex items-center gap-3 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
         <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
