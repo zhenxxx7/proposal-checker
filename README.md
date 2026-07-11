@@ -219,6 +219,23 @@ The analysis and Google Slides import routes set `maxDuration = 300`.
 
 ---
 
+## Versioning
+
+The version badge in the bottom-right corner of the app is derived from git
+history at build time (see `next.config.ts`) — no version number is ever edited
+by hand. Commit subjects follow [Conventional Commits](https://www.conventionalcommits.org):
+
+| Commit subject | Bump |
+|---|---|
+| `feat: ...` | minor |
+| `feat!: ...` or a `BREAKING CHANGE` note in the body | major |
+| anything else (`fix:`, `docs:`, plain text, ...) | patch |
+
+Shallow clones (Vercel builds) fall back to the commit SHA as the patch
+segment; without git, the badge shows the `package.json` version.
+
+---
+
 ## Notes and limits
 
 - **Local-file parsing is main-thread.** `DOMParser` does not exist in a Web
