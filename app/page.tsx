@@ -10,6 +10,19 @@ import { Button, Card, SearchInput, Tabs, ThemeToggle } from "@/components/ui";
 import { analyzeImages, analyzeText, selectImageJobs } from "@/lib/aiClient";
 import { collectFamilies, googleFontsUrl } from "@/lib/fonts";
 import { runRuleChecks } from "@/lib/checks";
+import {
+  applyFeedbackLearning,
+  clearStoredFeedbackLearning,
+  createFeedbackDeckIdentity,
+  createFeedbackRecord,
+  findingFingerprint,
+  isAiFinding,
+  loadFeedbackSelections,
+  loadStoredFeedbackRecords,
+  storeFeedbackRecord,
+  type FeedbackRating,
+  type FeedbackSelections,
+} from "@/lib/feedback";
 import { groupFindings } from "@/lib/groups";
 import { parsePptx } from "@/lib/pptx";
 import { bySeverity, download, toMarkdown } from "@/lib/report";
@@ -21,11 +34,12 @@ type View = (typeof VIEWS)[number];
 
 interface Status {
   configured: boolean;
+  provider: string;
   label: string;
   model: string;
 }
 
-const NO_AI: Status = { configured: false, label: "", model: "" };
+const NO_AI: Status = { configured: false, provider: "", label: "", model: "" };
 
 async function fetchAiStatus(): Promise<Status> {
   try {
@@ -49,8 +63,11 @@ export default function Page() {
   const [status, setStatus] = useState<Status | null>(null);
   const [aiDone, setAiDone] = useState(false);
   const [abort, setAbort] = useState<AbortController | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackSelections>({});
+  const [learnedSkipped, setLearnedSkipped] = useState(0);
   const analysisRunning = useRef(false);
   const deckLoading = useRef(false);
+  const rawAiFindings = useRef<Finding[]>([]);
 
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
@@ -84,9 +101,14 @@ export default function Page() {
     targetDeck: Deck,
     jobs: ReturnType<typeof selectImageJobs>,
     includeRules: boolean,
+    deckName: string,
   ) => {
     if (analysisRunning.current) return;
     analysisRunning.current = true;
+    // Freeze the local policy for this run so changing a rating mid-analysis
+    // cannot produce a half-old, half-new result.
+    const learningRecords = loadStoredFeedbackRecords();
+    const deckIdentity = createFeedbackDeckIdentity(deckName, targetDeck);
     const controller = new AbortController();
     setAbort(controller);
     setPhase("ai");
@@ -137,10 +159,13 @@ export default function Page() {
         ...(textResult.status === "fulfilled" ? textResult.value : []),
         ...(imageResult.status === "fulfilled" ? imageResult.value : []),
       ];
+      rawAiFindings.current = combined;
+      const learned = applyFeedbackLearning(combined, learningRecords, deckIdentity);
+      setLearnedSkipped(learned.skipped);
       const initialRules = localResult.status === "fulfilled" ? localResult.value : null;
       setFindings((current) => [
         ...(initialRules ?? current.filter((finding) => finding.source === "rule")),
-        ...combined,
+        ...learned.findings,
       ]);
 
       const failure = localResult.status === "rejected"
@@ -172,9 +197,12 @@ export default function Page() {
     setDeck(null);
     setUrls(new Map());
     setAiDone(false);
+    setLearnedSkipped(0);
+    rawAiFindings.current = [];
     setActive(null);
     setQuery("");
     setFileName(name);
+    setFeedback({});
     // Let the parsing frame paint before unzip blocks the main thread.
     await new Promise((resolve) => setTimeout(resolve, 30));
 
@@ -183,12 +211,15 @@ export default function Page() {
       // must not leave automatic AI analysis disabled for the whole session.
       const [parsed, providerStatus] = await Promise.all([readDeck(), fetchAiStatus()]);
       setStatus(providerStatus);
+      setFeedback(loadFeedbackSelections(createFeedbackDeckIdentity(name, parsed)));
       setSlide(1);
       setView("summary");
 
       if (providerStatus.configured) {
-        await runCombined(parsed, selectImageJobs(parsed), true);
+        await runCombined(parsed, selectImageJobs(parsed), true, name);
       } else {
+        rawAiFindings.current = [];
+        setLearnedSkipped(0);
         setFindings(runRuleChecks(parsed));
       }
 
@@ -219,9 +250,9 @@ export default function Page() {
   const imageJobs = useMemo(() => (deck ? selectImageJobs(deck) : []), [deck]);
   const rerunAi = useCallback(() => {
     if (deck && !analysisRunning.current) {
-      void runCombined(deck, imageJobs, false).finally(() => setPhase("ready"));
+      void runCombined(deck, imageJobs, false, fileName).finally(() => setPhase("ready"));
     }
-  }, [deck, imageJobs, runCombined]);
+  }, [deck, fileName, imageJobs, runCombined]);
 
   const matches = useCallback(
     (f: Finding) => {
@@ -249,6 +280,36 @@ export default function Page() {
     setSlide(f.slide);
     setActive(f.id);
     setView("slides");
+  }, []);
+
+  const submitFeedback = useCallback((finding: Finding, rating: FeedbackRating) => {
+    if (!deck || !isAiFinding(finding)) return;
+    const deckIdentity = createFeedbackDeckIdentity(fileName, deck);
+    const record = createFeedbackRecord({
+      finding,
+      rating,
+      deckName: deckIdentity.name,
+      deckFingerprint: deckIdentity.fingerprint,
+      slideCount: deck.slides.length,
+      provider: status?.provider,
+      model: status?.model,
+    });
+    const fingerprint = findingFingerprint(finding);
+    const stored = storeFeedbackRecord(record);
+    setFeedback((current) => ({
+      ...current,
+      [fingerprint]: { rating, delivery: stored ? "local" : "error" },
+    }));
+  }, [deck, fileName, status]);
+
+  const resetLocalLearning = useCallback(() => {
+    clearStoredFeedbackLearning();
+    setFeedback({});
+    setLearnedSkipped(0);
+    setFindings((currentFindings) => [
+      ...currentFindings.filter((finding) => finding.source === "rule"),
+      ...rawAiFindings.current,
+    ]);
   }, []);
 
   // ←/→ to walk slides while in the slide view.
@@ -339,6 +400,21 @@ export default function Page() {
           </Card>
         )}
 
+        {deck && learnedSkipped > 0 && (
+          <Card
+            data-local-learning
+            role="status"
+            className="flex items-center gap-3 border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-950 dark:border-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-100"
+          >
+            <span className="min-w-0 flex-1">
+              Local AI feedback hid {learnedSkipped} repeated finding{learnedSkipped === 1 ? "" : "s"}.
+            </span>
+            <Button onClick={resetLocalLearning} title="Forget all AI usefulness choices saved in this browser">
+              Reset local learning
+            </Button>
+          </Card>
+        )}
+
         {deck && phase === "ai" && (
           <div
             role="status"
@@ -366,7 +442,15 @@ export default function Page() {
         )}
 
         {deck && view === "summary" && (
-          <Summary all={findings} groups={groups} slideCount={deck.slides.length} query={query} onOpen={openFinding} />
+          <Summary
+            all={findings}
+            groups={groups}
+            slideCount={deck.slides.length}
+            query={query}
+            feedback={feedback}
+            onFeedback={submitFeedback}
+            onOpen={openFinding}
+          />
         )}
 
         {deck && view === "slides" && current && (
@@ -407,6 +491,8 @@ export default function Page() {
                     f={f}
                     active={f.id === active}
                     showSlide={false}
+                    feedback={feedback[findingFingerprint(f)]}
+                    onFeedback={submitFeedback}
                     onClick={() => setActive(f.id === active ? null : f.id)}
                   />
                 ))}

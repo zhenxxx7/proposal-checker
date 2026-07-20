@@ -12,6 +12,7 @@
     "verify:google": "node scripts/verify-google-slides.mjs",
     "verify:server-import": "tsx scripts/verify-server-import.ts",
     "verify:ai": "node scripts/verify-ai.mjs",
+    "verify:feedback": "tsx scripts/verify-feedback-fixes.ts",
     "mock:ai": "node scripts/mock-ai.mjs"
   },
   "dependencies": {

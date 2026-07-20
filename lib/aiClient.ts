@@ -2,6 +2,7 @@
 
 import type { AiFinding } from "./ai/schema";
 import { px96, type Deck, type Finding, type PicShape } from "./types";
+import { isVisibleOnSlide } from "./visibility";
 
 /** Free-tier vision models bill and choke on big images. 1400px reads UI text fine. */
 const MAX_EDGE = 1400;
@@ -26,7 +27,11 @@ export function slideTexts(deck: Deck) {
   return deck.slides
     .map((s) => ({
       n: s.index,
-      texts: s.shapes.flatMap((sh) => (sh.kind === "text" ? sh.paragraphs.map((p) => p.text) : [])),
+      texts: s.shapes.flatMap((sh) =>
+        sh.kind === "text" && isVisibleOnSlide(sh, deck.widthEmu, deck.heightEmu)
+          ? sh.paragraphs.map((p) => p.text)
+          : [],
+      ),
     }))
     .filter((s) => s.texts.length > 0);
 }
@@ -71,7 +76,6 @@ export interface ImageJob {
   slide: number;
   pic: PicShape;
   blob: Blob;
-  slideText: string;
   /** every place this exact image (same file, same crop) is used */
   uses: { slide: number; shapeId: string }[];
 }
@@ -86,12 +90,9 @@ export function selectImageJobs(deck: Deck, minAreaPct = 2): ImageJob[] {
   const byKey = new Map<string, ImageJob>();
 
   for (const slide of deck.slides) {
-    const slideText = slide.shapes
-      .flatMap((sh) => (sh.kind === "text" ? sh.paragraphs.map((p) => p.text) : []))
-      .join("\n");
-
     for (const sh of slide.shapes) {
       if (sh.kind !== "pic") continue;
+      if (!isVisibleOnSlide(sh, deck.widthEmu, deck.heightEmu)) continue;
       const info = deck.media.get(sh.media);
       const blob = deck.blobs.get(sh.media);
       if (!info || !blob || info.format === "svg" || info.format === "unknown") continue;
@@ -102,7 +103,7 @@ export function selectImageJobs(deck: Deck, minAreaPct = 2): ImageJob[] {
       const key = `${sh.media}|${crop}`;
       const existing = byKey.get(key);
       if (existing) existing.uses.push({ slide: slide.index, shapeId: sh.id });
-      else byKey.set(key, { slide: slide.index, pic: sh, blob, slideText, uses: [{ slide: slide.index, shapeId: sh.id }] });
+      else byKey.set(key, { slide: slide.index, pic: sh, blob, uses: [{ slide: slide.index, shapeId: sh.id }] });
     }
   }
   return [...byKey.values()];
@@ -124,7 +125,7 @@ export async function analyzeImages(
       if (signal?.aborted) return;
       const job = jobs[cursor++];
       try {
-        const { base64, mediaType } = await downscale(job.blob);
+        const { base64, mediaType } = await downscale(job.blob, job.pic.crop);
         const res = await fetch("/api/analyze-image", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -133,7 +134,6 @@ export async function analyzeImages(
             slide: job.slide,
             image: base64,
             mediaType,
-            slideText: job.slideText.slice(0, 4000),
             displayPx: { w: Math.round(px96(job.pic.rect.w)), h: Math.round(px96(job.pic.rect.h)) },
           }),
         });
@@ -152,19 +152,36 @@ export async function analyzeImages(
   return out;
 }
 
-/** Re-encode to JPEG under the vision size cap. Returns bare base64 (no data: prefix). */
-async function downscale(blob: Blob): Promise<{ base64: string; mediaType: "image/jpeg" }> {
+export function imageCropRect(width: number, height: number, crop: PicShape["crop"]) {
+  const left = Math.min(0.999, Math.max(0, crop.l));
+  const top = Math.min(0.999, Math.max(0, crop.t));
+  const right = Math.min(0.999 - left, Math.max(0, crop.r));
+  const bottom = Math.min(0.999 - top, Math.max(0, crop.b));
+  return {
+    x: width * left,
+    y: height * top,
+    w: Math.max(1, width * (1 - left - right)),
+    h: Math.max(1, height * (1 - top - bottom)),
+  };
+}
+
+/**
+ * Crop exactly what PowerPoint displays, then re-encode under the vision cap.
+ * Hidden text outside srcRect must not become an AI finding.
+ */
+async function downscale(blob: Blob, crop: PicShape["crop"]): Promise<{ base64: string; mediaType: "image/jpeg" }> {
   const bmp = await createImageBitmap(blob);
-  const scale = Math.min(1, MAX_EDGE / Math.max(bmp.width, bmp.height));
-  const w = Math.max(1, Math.round(bmp.width * scale));
-  const h = Math.max(1, Math.round(bmp.height * scale));
+  const source = imageCropRect(bmp.width, bmp.height, crop);
+  const scale = Math.min(1, MAX_EDGE / Math.max(source.w, source.h));
+  const w = Math.max(1, Math.round(source.w * scale));
+  const h = Math.max(1, Math.round(source.h * scale));
 
   const canvas = new OffscreenCanvas(w, h);
   const ctx = canvas.getContext("2d")!;
   // Flatten transparency onto white — a transparent PNG reads as black otherwise.
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(bmp, 0, 0, w, h);
+  ctx.drawImage(bmp, source.x, source.y, source.w, source.h, 0, 0, w, h);
   bmp.close();
 
   const jpeg = await canvas.convertToBlob({ type: "image/jpeg", quality: JPEG_QUALITY });

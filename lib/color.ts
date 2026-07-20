@@ -88,16 +88,43 @@ export function resolveFill(spPr: Element | null, scheme: Scheme): Fill | undefi
   // noFill wins if it is a direct child.
   for (const c of directChildren(spPr)) {
     if (c.localName === "noFill") return undefined;
-    if (c.localName === "solidFill") {
-      const color = colorFromContainer(c, scheme);
-      return color ? { type: "solid", color } : undefined;
-    }
-    if (c.localName === "gradFill") {
-      const css = gradientCss(c, scheme);
-      return css ? { type: "gradient", css } : undefined;
-    }
+    const fill = resolveFillElement(c, scheme);
+    if (fill) return fill;
   }
   return undefined;
+}
+
+/** Resolve one DrawingML fill node, including theme style-matrix entries. */
+export function resolveFillElement(fill: Element, scheme: Scheme): Fill | undefined {
+  if (fill.localName === "solidFill") {
+    const color = colorFromContainer(fill, scheme);
+    return color ? { type: "solid", color } : undefined;
+  }
+  if (fill.localName === "gradFill") {
+    const css = gradientCss(fill, scheme);
+    return css ? { type: "gradient", css } : undefined;
+  }
+  if (fill.localName === "pattFill") {
+    // CSS has no direct equivalent for every DrawingML preset pattern. The
+    // background colour covers most pixels and is a faithful non-transparent
+    // fallback; use the foreground when the background is absent.
+    const background = directChildren(fill).find((child) => child.localName === "bgClr");
+    const foreground = directChildren(fill).find((child) => child.localName === "fgClr");
+    const color = colorFromContainer(background ?? foreground ?? fill, scheme);
+    return color ? { type: "solid", color } : undefined;
+  }
+  return undefined;
+}
+
+/** 1..999 index fillStyleLst; 1001+ index bgFillStyleLst. */
+export function themeFillElement(themeDoc: Document | null, index: number): Element | null {
+  if (!themeDoc || index <= 0) return null;
+  const background = index >= 1001;
+  const listName = background ? "bgFillStyleLst" : "fillStyleLst";
+  const offset = background ? index - 1001 : index - 1;
+  const list = themeDoc.getElementsByTagNameNS(NS_A, listName)[0];
+  if (!list || offset < 0) return null;
+  return directChildren(list)[offset] ?? null;
 }
 
 export function resolveLine(spPr: Element | null, scheme: Scheme): Line | undefined {
@@ -131,6 +158,15 @@ export function resolveBackground(slideDoc: Document, scheme: Scheme): Fill | un
     const color = colorFromContainer(solid, scheme);
     if (color) return { type: "solid", color };
   }
+  // Theme-backed backgrounds commonly use <p:bgRef> instead of embedding a
+  // fill. Its colour is still a reliable preview fallback even when the full
+  // theme style matrix is not represented in CSS.
+  const bgRef = bg.getElementsByTagNameNS(
+    "http://schemas.openxmlformats.org/presentationml/2006/main",
+    "bgRef",
+  )[0];
+  const refColor = bgRef ? colorFromContainer(bgRef, scheme) : null;
+  if (refColor) return { type: "solid", color: refColor };
   return undefined;
 }
 

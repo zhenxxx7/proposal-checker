@@ -54,7 +54,6 @@ for (let i = 1; i <= 3; i++) {
     slide: 7,
     image: JPEG_1PX,
     mediaType: "image/jpeg",
-    slideText: "Submit your entry",
     displayPx: { w: 640, h: 360 },
   });
   expect(img.status === 200, `call ${i}: HTTP ${img.status}${img.json.error ? ` — ${img.json.error}` : ""}`);

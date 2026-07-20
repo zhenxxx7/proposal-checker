@@ -15,6 +15,25 @@ interface Props {
 const fillCss = (f?: Fill): string | undefined =>
   f?.type === "solid" ? f.color : f?.type === "gradient" ? f.css : undefined;
 
+const fillStyle = (f: Fill | undefined, urls: Map<string, string>): React.CSSProperties => {
+  const css = fillCss(f);
+  if (css) return { background: css };
+  if (f?.type !== "image") return {};
+  const url = urls.get(f.media);
+  if (!url) return {};
+
+  const fw = Math.max(0.001, 1 - f.crop.l - f.crop.r);
+  const fh = Math.max(0.001, 1 - f.crop.t - f.crop.b);
+  const x = f.crop.l + f.crop.r > 0 ? (f.crop.l / (f.crop.l + f.crop.r)) * 100 : 50;
+  const y = f.crop.t + f.crop.b > 0 ? (f.crop.t / (f.crop.t + f.crop.b)) * 100 : 50;
+  return {
+    backgroundImage: `url("${url}")`,
+    backgroundRepeat: "no-repeat",
+    backgroundSize: `${100 / fw}% ${100 / fh}%`,
+    backgroundPosition: `${x}% ${y}%`,
+  };
+};
+
 /** Approximate CSS clip-paths for the preset shapes decks actually use. */
 const CLIP: Record<string, string> = {
   triangle: "polygon(50% 0, 100% 100%, 0 100%)",
@@ -40,7 +59,7 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
   const thumb = variant === "thumb";
   const pct = (v: number, total: number) => `${(v / total) * 100}%`;
   const cqw = (emu: number) => `${(emu / W) * 100}cqw`;
-  const bg = fillCss(slide.background) ?? "#ffffff";
+  const background = slide.background ? fillStyle(slide.background, urls) : { background: "#ffffff" };
 
   // Presentation apps paint master and layout shapes before the slide itself.
   // Keep that order here while findings still point only at slide-owned shapes.
@@ -52,7 +71,7 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
   return (
     <div
       className="relative h-full w-full overflow-hidden"
-      style={{ aspectRatio: `${W} / ${H}`, containerType: "inline-size", background: bg }}
+      style={{ aspectRatio: `${W} / ${H}`, containerType: "inline-size", ...background }}
     >
       {shapes.map((sh) => {
         const box = {
@@ -118,7 +137,7 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
           );
         }
 
-        return <TextBox key={sh.id} sh={sh} box={box} cqw={cqw} />;
+        return <TextBox key={sh.id} sh={sh} box={box} cqw={cqw} urls={urls} />;
       })}
 
       {!thumb &&
@@ -136,9 +155,7 @@ export function SlidePreview({ deck, slide, urls, highlight, variant = "full" }:
                 width: pct(sh.rect.w, W),
                 height: pct(sh.rect.h, H),
               }}
-            >
-              <span className="absolute -left-1.5 -top-1.5 h-3 w-3 bg-rose-500 ring-2 ring-white dark:ring-zinc-950" />
-            </span>
+            />
           ))}
     </div>
   );
@@ -148,10 +165,12 @@ function TextBox({
   sh,
   box,
   cqw,
+  urls,
 }: {
   sh: TextShape;
   box: React.CSSProperties;
   cqw: (emu: number) => string;
+  urls: Map<string, string>;
 }) {
   const pt = sh.paragraphs.flatMap((p) => p.sizes)[0] ?? 14;
   const justify = sh.anchor === "center" ? "center" : sh.anchor === "bottom" ? "flex-end" : "flex-start";
@@ -172,7 +191,7 @@ function TextBox({
       style={{
         ...box,
         justifyContent: justify,
-        background: fillCss(sh.fill),
+        ...fillStyle(sh.fill, urls),
         border: sh.line ? `${Math.max(1, (sh.line.width / EMU_PER_INCH) * 96)}px ${sh.line.dash ? "dashed" : "solid"} ${sh.line.color}` : undefined,
         borderRadius,
         clipPath,

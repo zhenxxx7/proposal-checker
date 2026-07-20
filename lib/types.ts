@@ -45,7 +45,6 @@ export type Code =
   | "img.hero-width"
   | "geo.text-overflow"
   | "geo.pic-offslide"
-  | "geo.parked"
   | "slide.duplicate"
   | "ai.text"
   | "ai.image";
@@ -86,7 +85,8 @@ export interface Crop {
 /** A resolved, CSS-ready fill. Theme colors and modifiers are baked in at parse time. */
 export type Fill =
   | { type: "solid"; color: string }
-  | { type: "gradient"; css: string };
+  | { type: "gradient"; css: string }
+  | { type: "image"; media: string; crop: Crop };
 
 export interface Line {
   color: string;

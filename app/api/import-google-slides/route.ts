@@ -221,8 +221,10 @@ export async function POST(request: Request) {
 async function prepareDeckForTransfer(deck: Deck): Promise<Deck> {
   const referenced = new Set<string>();
   for (const slide of deck.slides) {
+    if (slide.background?.type === "image") referenced.add(slide.background.media);
     for (const shape of [...(slide.backgroundShapes ?? []), ...slide.shapes]) {
       if (shape.kind === "pic") referenced.add(shape.media);
+      if (shape.kind === "text" && shape.fill?.type === "image") referenced.add(shape.fill.media);
     }
   }
 

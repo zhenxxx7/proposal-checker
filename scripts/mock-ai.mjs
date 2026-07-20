@@ -52,6 +52,15 @@ http
       const image = user.content.find((p) => p.type === "image_url");
 
       if (image) {
+        const requiredImageGuidance = [
+          "Differences between explanatory text outside the mockup",
+          "Tiny text used as scenery",
+          "blur, pixelation, compression, scaling, or low source resolution",
+          "clearly legible glyph visibly crosses",
+        ];
+        if (requiredImageGuidance.some((instruction) => !sys.content.includes(instruction))) {
+          return fail(res, 400, "image-review false-positive exclusions are missing");
+        }
         if (!/^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(image.image_url.url)) {
           return fail(res, 400, "image_url must be a base64 data URL");
         }

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { FindingCard } from "./FindingCard";
 import { Card, StackedBar, TONE } from "./ui";
+import { findingFingerprint, type FeedbackRating, type FeedbackSelections } from "@/lib/feedback";
 import { readiness, type Group } from "@/lib/groups";
 import type { Finding, Severity } from "@/lib/types";
 
@@ -35,6 +36,8 @@ export function Summary({
   slideCount,
   query,
   onOpen,
+  feedback,
+  onFeedback,
 }: {
   /** the whole deck — the verdict must not change when the user searches */
   all: Finding[];
@@ -43,6 +46,8 @@ export function Summary({
   slideCount: number;
   query: string;
   onOpen: (f: Finding) => void;
+  feedback: FeedbackSelections;
+  onFeedback: (finding: Finding, rating: FeedbackRating) => void;
 }) {
   const state = readiness(all);
   const b = BANNER[state];
@@ -101,14 +106,33 @@ export function Summary({
         {groups.map((g, i) => (
           // Expand what needs attention. A deck with no blocking issues would
           // otherwise land on a wall of collapsed rows, so open the top group.
-          <GroupCard key={g.key} g={g} defaultOpen={g.severity === "error" || i === 0} onOpen={onOpen} />
+          <GroupCard
+            key={g.key}
+            g={g}
+            defaultOpen={g.severity === "error" || i === 0}
+            onOpen={onOpen}
+            feedback={feedback}
+            onFeedback={onFeedback}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function GroupCard({ g, defaultOpen, onOpen }: { g: Group; defaultOpen: boolean; onOpen: (f: Finding) => void }) {
+function GroupCard({
+  g,
+  defaultOpen,
+  onOpen,
+  feedback,
+  onFeedback,
+}: {
+  g: Group;
+  defaultOpen: boolean;
+  onOpen: (f: Finding) => void;
+  feedback: FeedbackSelections;
+  onFeedback: (finding: Finding, rating: FeedbackRating) => void;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   const tone = TONE[g.severity];
 
@@ -143,7 +167,14 @@ function GroupCard({ g, defaultOpen, onOpen }: { g: Group; defaultOpen: boolean;
       {open && (
         <div className="divide-y divide-zinc-100 border-t border-zinc-100 dark:divide-zinc-800 dark:border-zinc-800">
           {g.findings.map((f) => (
-            <FindingCard key={f.id} f={f} active={false} onClick={() => onOpen(f)} />
+            <FindingCard
+              key={f.id}
+              f={f}
+              active={false}
+              feedback={feedback[findingFingerprint(f)]}
+              onFeedback={onFeedback}
+              onClick={() => onOpen(f)}
+            />
           ))}
         </div>
       )}

@@ -11,6 +11,7 @@ import {
   type Shape,
   type TextShape,
 } from "./types";
+import { isVisibleOnSlide } from "./visibility";
 
 let seq = 0;
 const mk = (f: Omit<Finding, "id" | "source">): Finding => ({ ...f, id: `r${++seq}`, source: "rule" });
@@ -22,15 +23,22 @@ const MAX_SIBLINGS = 10;
 
 export function runRuleChecks(deck: Deck): Finding[] {
   seq = 0;
+  const visibleDeck: Deck = {
+    ...deck,
+    slides: deck.slides.map((slide) => ({
+      ...slide,
+      shapes: slide.shapes.filter((shape) => isVisibleOnSlide(shape, deck.widthEmu, deck.heightEmu)),
+    })),
+  };
   return [
-    ...deck.slides.flatMap((s) => textChecks(s.index, s.shapes.filter(isText))),
-    ...deck.slides.flatMap((s) => imageChecks(deck, s.index, s.shapes.filter(isPic))),
-    ...geometryChecks(deck),
-    ...deckTextConsistency(deck),
-    ...deckImageConsistency(deck),
-    ...duplicateSlides(deck),
-    ...fontDrift(deck),
-    ...lowContrastText(deck),
+    ...visibleDeck.slides.flatMap((s) => textChecks(s.index, s.shapes.filter(isText))),
+    ...visibleDeck.slides.flatMap((s) => imageChecks(visibleDeck, s.index, s.shapes.filter(isPic))),
+    ...geometryChecks(visibleDeck),
+    ...deckTextConsistency(visibleDeck),
+    ...deckImageConsistency(visibleDeck),
+    ...duplicateSlides(visibleDeck),
+    ...fontDrift(visibleDeck),
+    ...lowContrastText(visibleDeck),
   ];
 }
 
@@ -779,7 +787,8 @@ function lowContrastText(deck: Deck): Finding[] {
   const fillColors = (f: Fill | undefined): string[] => {
     if (!f) return [];
     if (f.type === "solid") return [f.color];
-    return f.css.match(/#[0-9a-f]{6}/gi) ?? [];
+    if (f.type === "gradient") return f.css.match(/#[0-9a-f]{6}/gi) ?? [];
+    return [];
   };
 
   const overlapFrac = (a: Rect, b: Rect) => {
@@ -789,24 +798,37 @@ function lowContrastText(deck: Deck): Finding[] {
   };
 
   for (const slide of deck.slides) {
-    const slideBg = fillColors(slide.background).length ? fillColors(slide.background) : ["#ffffff"];
+    const resolvedSlideBg = fillColors(slide.background);
+    const slideBg = resolvedSlideBg.length
+      ? resolvedSlideBg
+      : slide.background?.type === "image"
+        ? []
+        : ["#ffffff"];
+    const backgroundShapes = slide.backgroundShapes ?? [];
+    const paintedShapes = [...backgroundShapes, ...slide.shapes];
 
     for (let i = 0; i < slide.shapes.length; i++) {
       const sh = slide.shapes[i];
       if (!isText(sh)) continue;
-      // Parked off-canvas → never renders; already reported by geometryChecks.
+      // Defensive guard: fully off-canvas shapes are excluded before checks run.
       const { x, y, w, h } = sh.rect;
       if (x + w <= 0 || y + h <= 0 || x >= deck.widthEmu || y >= deck.heightEmu) continue;
 
       // What is actually behind this text? Walk shapes *below* it in z-order:
       // the topmost filled shape or picture covering most of the text wins.
       // A footer caption usually sits on a decorative bar, not the slide bg.
-      let bg: string[] | null = fillColors(sh.fill).length ? fillColors(sh.fill) : null;
+      const ownFill = fillColors(sh.fill);
+      let bg: string[] | null = ownFill.length
+        ? ownFill
+        : sh.fill?.type === "image"
+          ? []
+          : null;
       if (!bg) {
-        for (let j = i - 1; j >= 0 && !bg; j--) {
-          const under = slide.shapes[j];
+        for (let j = backgroundShapes.length + i - 1; j >= 0 && !bg; j--) {
+          const under = paintedShapes[j];
           if (overlapFrac(sh.rect, under.rect) < 0.6) continue;
           if (under.kind === "pic") bg = []; // text over a photo — can't judge
+          else if (under.kind === "text" && under.fill?.type === "image") bg = [];
           else if (under.kind === "text" && fillColors(under.fill).length) bg = fillColors(under.fill);
         }
       }
@@ -854,21 +876,12 @@ function geometryChecks(deck: Deck): Finding[] {
   const tol = 0.05 * EMU_PER_INCH;
   const { widthEmu: W, heightEmu: H } = deck;
 
-  // Elements parked off-canvas are usually one template artefact repeated on
-  // every slide. Report the artefact once, not once per slide.
-  const parked = new Map<string, { slides: number[]; ids: string[]; sample: string }>();
-
   for (const slide of deck.slides) {
     for (const sh of slide.shapes) {
       const { x, y, w, h } = sh.rect;
       if (w <= 0 || h <= 0) continue;
 
       if (x + w <= 0 || y + h <= 0 || x >= W || y >= H) {
-        const sample = sh.kind === "text" ? sh.paragraphs[0]?.text.slice(0, 50) ?? sh.name : name(sh);
-        const key = `${sh.kind}:${sample}`;
-        const e = parked.get(key) ?? parked.set(key, { slides: [], ids: [], sample }).get(key)!;
-        e.slides.push(slide.index);
-        e.ids.push(sh.id);
         continue;
       }
 
@@ -915,24 +928,6 @@ function geometryChecks(deck: Deck): Finding[] {
         }
       }
     }
-  }
-
-  for (const [, e] of parked) {
-    out.push(
-      mk({
-        code: "geo.parked",
-        slide: e.slides[0],
-        severity: "info",
-        category: "geometry",
-        title:
-          e.slides.length > 1
-            ? `A hidden element sits off-canvas on ${e.slides.length} slides`
-            : "A hidden element sits off-canvas",
-        detail: `“${e.sample}” is entirely outside the slide area, so it never renders. Delete it or move it back.`,
-        relatedSlides: e.slides,
-        shapeIds: e.ids,
-      }),
-    );
   }
 
   return out;

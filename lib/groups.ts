@@ -121,9 +121,9 @@ const DEFS: Def[] = [
   {
     key: "cleanup",
     icon: "🧹",
-    codes: ["geo.parked", "img.oversized", "style.mixed-quotes", "style.title-size", "style.font-drift", "term.case-styling"],
+    codes: ["img.oversized", "style.mixed-quotes", "style.title-size", "style.font-drift", "term.case-styling"],
     title: (n) => plural(n, "A housekeeping note", "{n} housekeeping notes"),
-    why: "Hidden elements, file bloat, and style drift. Nothing urgent.",
+    why: "File bloat and style drift. Nothing urgent.",
   },
 ];
 

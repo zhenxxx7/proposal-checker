@@ -50,7 +50,6 @@ internally-capitalised form.
 | Images almost aligned on a shared edge (1–4px out) | review |
 | Same image nudged to slightly different sizes across slides | review |
 | Text box runs past the slide edge | review |
-| Element parked entirely off-canvas (aggregated across slides) | minor |
 | Large asset rendered tiny — file bloat or stray element | minor |
 
 ### Slides
@@ -68,8 +67,10 @@ rotation, so a 40px logo cropped out of a 2000px sprite sheet is measured as 40p
 not 2000px.
 
 ### Inside images (AI pass)
-Typos, grammar, clipped or truncated labels, placeholder UI copy (`Lorem ipsum`,
-`Your text here`), and terminology that contradicts the surrounding slide text.
+Confidently legible typos, grammar, placeholder UI copy (`Lorem ipsum`, `Your
+text here`), and clearly visible clipping. It ignores outside explanatory text
+that differs from mockup labels, tiny scenery text, and low-resolution OCR
+artefacts.
 
 ---
 
@@ -81,8 +82,8 @@ a 120-logo wall generates thousands of meaningless "these two are almost the sam
 size" findings. On a real 56-slide deck the gate takes the output from 2,951
 findings down to 53.
 
-Repeated template artefacts (an off-canvas footer on 32 slides) collapse into a
-single finding that lists the slides.
+Elements entirely outside the slide canvas are ignored because they never appear
+in the exported presentation.
 
 ---
 
@@ -101,6 +102,14 @@ Search filters the list; it never changes the verdict or the counters. Every fix
 suggestion has a one-click **copy**. Light and dark themes, remembered. When a provider
 is configured, local rules plus AI text and vision checks run as one automatic analysis;
 the button only re-runs AI, and disables itself with a reason when no provider is set.
+AI findings also carry a **Useful / Not useful** dropdown. The latest choice is
+saved in that browser and appears consistently in Summary and Slides; rule
+findings have no feedback control. On the next AI run, findings that match the
+latest normalized pattern marked **Not useful** are hidden for the same deck.
+Cross-deck suppression is deliberately conservative: at least two distinct
+decks must agree and at least 80% of their latest ratings must be **Not useful**.
+A visible notice shows how many were skipped and can reset all locally learned
+choices without another AI request.
 
 An AI run on an image-heavy deck is 60–100 requests, so it is **cancellable** — stopping
 keeps every finding collected up to that point.
@@ -138,6 +147,11 @@ cp .env.example .env.local
 # AI_PROVIDER=gemini
 # AI_API_KEY=...            # https://aistudio.google.com/apikey
 ```
+
+Local feedback learning needs no database, queue, cron job, or additional
+backend. It is deterministic application-level learning rather than model-weight
+training, so it stays on that browser and is removed when browser storage is
+cleared. Ratings never leave the browser and do not call a feedback API.
 
 **If the deck is confidential, skip the AI pass.** The rule checks run entirely
 in the browser and upload nothing; only the AI pass sends data out, and Gemini's
@@ -206,7 +220,9 @@ supported providers are hosted, so nothing depends on a machine-local endpoint.
 Local `.pptx` files are never uploaded. For a Google Slides link, one serverless
 request downloads and parses the raw export in memory; no file, database record,
 or durable server state is created. The browser receives only structured slide
-data and referenced, size-reduced preview assets. The AI pass sends only:
+data and referenced, size-reduced preview assets. AI feedback and learned
+suppression stay in browser `localStorage`; no feedback database is required.
+The AI pass sends only:
 
 - the extracted slide text, in one request;
 - each qualifying image, re-encoded to JPEG at ≤1400px on the long edge, one per

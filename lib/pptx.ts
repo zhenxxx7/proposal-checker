@@ -7,7 +7,9 @@ import {
   resolveBackground,
   resolveColor,
   resolveFill,
+  resolveFillElement,
   resolveLine,
+  themeFillElement,
   type Scheme,
   type ThemeFonts,
 } from "./color";
@@ -30,6 +32,8 @@ const IDENTITY: Transform = { sx: 1, sy: 1, tx: 0, ty: 0 };
 interface Ctx {
   scheme: Scheme;
   fonts: ThemeFonts;
+  theme: Document | null;
+  themeRels: Map<string, string>;
 }
 
 interface MasterLayer {
@@ -303,11 +307,20 @@ function parsePptxFiles(
       const themeDoc = themePath && files[themePath] ? xml(themePath) : null;
       const clrMapEl = doc?.getElementsByTagNameNS(NS_P, "clrMap")[0] ?? null;
       const scheme = applyClrMap(parseScheme(themeDoc), clrMapEl);
-      const ctx = { scheme, fonts: parseFontScheme(themeDoc) };
+      const ctx = {
+        scheme,
+        fonts: parseFontScheme(themeDoc),
+        theme: themeDoc,
+        themeRels: themePath ? relsFor(themePath) : new Map<string, string>(),
+      };
       const shapes: Shape[] = [];
       const tree = doc?.getElementsByTagNameNS(NS_P, "spTree")[0];
       if (tree) walk(tree, IDENTITY, relsFor(masterPath), shapes, `master-${masterPath}`, ctx);
-      m = { ctx, bg: doc ? resolveBackground(doc, scheme) : undefined, shapes };
+      m = {
+        ctx,
+        bg: doc ? resolveLayerBackground(doc, ctx, relsFor(masterPath)) : undefined,
+        shapes,
+      };
       masterCache.set(masterPath, m);
     }
     return m;
@@ -325,7 +338,7 @@ function parsePptxFiles(
       if (tree) walk(tree, IDENTITY, relsFor(layoutPath), shapes, `layout-${layoutPath}`, master.ctx);
       l = {
         master,
-        bg: doc ? resolveBackground(doc, master.ctx.scheme) : undefined,
+        bg: doc ? resolveLayerBackground(doc, master.ctx, relsFor(layoutPath)) : undefined,
         shapes,
         showsMasterShapes: doc?.documentElement.getAttribute("showMasterSp") !== "0",
       };
@@ -360,7 +373,7 @@ function parsePptxFiles(
         ...layout.shapes,
       ],
       shapes,
-      background: resolveBackground(doc, ctx.scheme) ?? layout.bg ?? layout.master.bg,
+      background: resolveLayerBackground(doc, ctx, rels) ?? layout.bg ?? layout.master.bg,
     };
   });
 
@@ -401,7 +414,7 @@ function walk(
       }
       case "sp":
       case "graphicFrame": {
-        const t = readText(child, tf, id, ctx);
+        const t = readText(child, tf, rels, id, ctx);
         if (t) out.push(t);
         break;
       }
@@ -484,7 +497,13 @@ function readPic(el: Element, tf: Transform, rels: Map<string, string>, id: stri
 const ALIGN: Record<string, Align> = { l: "left", ctr: "center", r: "right", just: "justify" };
 const ANCHOR: Record<string, Anchor> = { t: "top", ctr: "center", b: "bottom" };
 
-function readText(el: Element, tf: Transform, id: string, ctx: Ctx): TextShape | null {
+function readText(
+  el: Element,
+  tf: Transform,
+  rels: Map<string, string>,
+  id: string,
+  ctx: Ctx,
+): TextShape | null {
   const { scheme, fonts } = ctx;
   // "+mj-lt"/"+mn-lt" are theme font references, not typeface names.
   const themeFace = (face: string | null | undefined): string | undefined => {
@@ -552,7 +571,7 @@ function readText(el: Element, tf: Transform, id: string, ctx: Ctx): TextShape |
   }
 
   const spPr = firstNS(el, NS_P, "spPr");
-  const fill = resolveFill(spPr, scheme);
+  const fill = resolveShapeFill(el, spPr, ctx, rels);
   const line = resolveLine(spPr, scheme);
 
   // Preset geometry. roundRect's corner radius comes from its adj guide,
@@ -603,6 +622,79 @@ function readText(el: Element, tf: Transform, id: string, ctx: Ctx): TextShape |
     geom,
     radius,
     insets,
+  };
+}
+
+function resolveLayerBackground(doc: Document, ctx: Ctx, rels: Map<string, string>): Fill | undefined {
+  const bg = doc.getElementsByTagNameNS(NS_P, "bg")[0] ?? null;
+  const bgRef = bg ? childNS(bg, NS_P, "bgRef") : null;
+  const index = num(bgRef?.getAttribute("idx"), 0);
+  return (
+    readImageFill(bg, rels) ??
+    resolveThemeFill(ctx, bgRef, index) ??
+    resolveBackground(doc, ctx.scheme)
+  );
+}
+
+function resolveShapeFill(
+  el: Element,
+  spPr: Element | null,
+  ctx: Ctx,
+  rels: Map<string, string>,
+): Fill | undefined {
+  const explicit = resolveFill(spPr, ctx.scheme);
+  if (explicit) return explicit;
+  if (spPr && elementChildren(spPr).some((child) => child.namespaceURI === NS_A && child.localName === "noFill")) {
+    return undefined;
+  }
+
+  const image = readImageFill(spPr, rels);
+  if (image) return image;
+
+  // Theme-styled shapes often omit a direct fill and point at <a:fillRef>.
+  // Using the reference colour restores the intended panel/background instead
+  // of silently dropping the entire shape.
+  const style = childNS(el, NS_P, "style");
+  const fillRef = style ? childNS(style, NS_A, "fillRef") : null;
+  // idx=0 is the theme's "no fill" entry (common on plain text boxes).
+  // Applying its reference colour would paint opaque panels behind text.
+  const index = num(fillRef?.getAttribute("idx"), 0);
+  const themed = resolveThemeFill(ctx, fillRef, index);
+  if (themed) return themed;
+  const color = index > 0 ? resolveColor(fillRef, ctx.scheme) : null;
+  return color ? { type: "solid", color } : undefined;
+}
+
+function resolveThemeFill(ctx: Ctx, ref: Element | null, index: number): Fill | undefined {
+  const fill = themeFillElement(ctx.theme, index);
+  if (!fill) return undefined;
+
+  const placeholder = resolveColor(ref, ctx.scheme);
+  const scheme = new Map(ctx.scheme);
+  if (placeholder) scheme.set("phClr", placeholder);
+  return readImageFill(fill, ctx.themeRels) ?? resolveFillElement(fill, scheme);
+}
+
+function readImageFill(root: Element | null, rels: Map<string, string>): Fill | undefined {
+  if (!root) return undefined;
+  const blipFill = root.namespaceURI === NS_A && root.localName === "blipFill"
+    ? root
+    : firstNS(root, NS_A, "blipFill");
+  if (!blipFill) return undefined;
+  const blip = firstNS(blipFill, NS_A, "blip");
+  const embed = blip?.getAttributeNS(NS_R, "embed");
+  const media = embed ? rels.get(embed) : undefined;
+  if (!media) return undefined;
+  const src = firstNS(blipFill, NS_A, "srcRect");
+  return {
+    type: "image",
+    media,
+    crop: {
+      l: num(src?.getAttribute("l"), 0) / 100000,
+      t: num(src?.getAttribute("t"), 0) / 100000,
+      r: num(src?.getAttribute("r"), 0) / 100000,
+      b: num(src?.getAttribute("b"), 0) / 100000,
+    },
   };
 }
 

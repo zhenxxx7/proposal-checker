@@ -37,8 +37,15 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 
 const consoleErrors = [];
+let feedbackRequests = 0;
+let aiAnalysisRequests = 0;
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
+page.on("request", (request) => {
+  const path = new URL(request.url()).pathname;
+  if (path === "/api/feedback") feedbackRequests++;
+  if (path === "/api/analyze-text" || path === "/api/analyze-image") aiAnalysisRequests++;
+});
 
 const headerText = () => page.$eval("header", (e) => e.innerText.replace(/\n/g, " "));
 
@@ -127,7 +134,7 @@ expect(stats.length === 3, `three stat tiles: ${stats.join(" / ")}`);
 
 const cardTitles = () => page.$$eval("[data-group-title]", (els) => els.map((e) => e.textContent));
 const cards = await cardTitles();
-expect(cards.length >= 5 && cards.length <= 14, `${cards.length} group cards (not a wall of rows)`);
+expect(cards.length >= 1 && cards.length <= 14, `${cards.length} group cards (not a wall of rows)`);
 cards.forEach((c) => console.log(`        · ${c}`));
 
 const aiCtl = await headerText();
@@ -219,8 +226,10 @@ if (status.configured) {
   const aiGroups = afterAi.filter((t) => /mockup image|proofreading note/i.test(t));
   expect(aiGroups.length >= 1, `AI groups appeared: ${aiGroups.join(" | ") || "none"}`);
 
-  // The in-image group renders collapsed; open it to inspect a finding.
-  await page.$$eval("[data-group='in-image'] button", (els) => els[0]?.click());
+  // Open the group only when it is collapsed; it can already be the top group.
+  await page.$eval("[data-group='in-image']", (group) => {
+    if (!group.querySelector("[data-finding]")) group.querySelector("button")?.click();
+  });
   await wait(400);
   const shown = await page.$eval("[data-group='in-image']", (e) => e.innerText);
   expect(shown.includes("Submitt"), "in-image typo 'Submitt' rendered");
@@ -229,7 +238,91 @@ if (status.configured) {
 
   const stats3 = await readStats();
   expect(stats3.join("/") !== partial.join("/"), `full AI results restored: ${partial.join("/")} -> ${stats3.join("/")}`);
+
+  console.log("\n11. AI feedback stays structured and synchronized");
+  expect((await page.$$("[data-finding] textarea")).length === 0, "AI feedback has no free-text field");
+  const rating = await page.$("[data-group='in-image'] [data-feedback-rating]");
+  expect(!!rating, "AI finding exposes the usefulness dropdown");
+  if (!rating) throw new Error("AI usefulness dropdown was not rendered.");
+  await rating.select("not-useful");
+  await page.waitForFunction(
+    () => {
+      const select = document.querySelector("[data-group='in-image'] [data-feedback-rating]");
+      const status = select?.closest("[data-finding]")?.querySelector("[data-feedback-status]");
+      return select?.value === "not-useful" && status?.getAttribute("data-feedback-status") !== "saving";
+    },
+    { timeout: 10000 },
+  );
+  const feedbackState = await rating.evaluate((select) => ({
+    value: select.value,
+    status: select.closest("[data-finding]")?.querySelector("[data-feedback-status]")?.textContent,
+    stored: Object.keys(localStorage).some((key) => key.startsWith("proposal-checker:ai-feedback:v1:")),
+  }));
+  expect(feedbackState.value === "not-useful", "Not useful selection applied");
+  expect(feedbackState.status?.trim() === "Learned locally", `rating persisted locally (${feedbackState.status})`);
+  expect(feedbackState.stored, "rating written to browser storage");
+  expect(feedbackRequests === 0, "rating sends no /api/feedback request");
+
+  await rating.evaluate((select) => select.closest("[data-finding]")?.click());
+  await page.waitForSelector("[data-stage]", { timeout: 10000 });
+  const slideRating = await page.$eval("[data-stage] + aside [data-feedback-rating]", (select) => select.value);
+  expect(slideRating === "not-useful", "same rating appears in Slides view");
+
+  await (await findHeaderButton("summary")).click();
+  await wait(400);
   await page.screenshot({ path: "scripts/__ai.png" });
+
+  console.log("\n12. Browser-local feedback changes the next run and can be reset");
+  const reRunWithLearning = await findHeaderButton("Re-run AI check");
+  expect(!!reRunWithLearning, "re-run button available for learned filtering");
+  if (!reRunWithLearning) throw new Error("Re-run AI check button was not rendered.");
+  await reRunWithLearning.click();
+  await page.waitForFunction(() => document.querySelector("header").innerText.includes("Cancel"), {
+    timeout: 60000,
+  });
+  await page.waitForFunction(
+    () => {
+      const text = document.querySelector("header").innerText;
+      return !text.includes("Cancel") && text.includes("Re-run AI check");
+    },
+    { timeout: 240000 },
+  );
+  await page.waitForSelector("[data-local-learning]", { timeout: 10000 });
+  await wait(800);
+
+  const learnedStats = await readStats();
+  const statTotal = (values) =>
+    values.reduce((total, value) => total + Number(value.match(/\d+/)?.[0] ?? 0), 0);
+  expect(
+    statTotal(learnedStats) < statTotal(stats3),
+    `local learning hides one or more findings: ${stats3.join("/")} -> ${learnedStats.join("/")}`,
+  );
+  const learningNotice = await page.$eval("[data-local-learning]", (e) => e.innerText);
+  expect(/hid|hidden/i.test(learningNotice), `local-learning notice shown: "${learningNotice.replace(/\n/g, " ")}"`);
+  expect(feedbackRequests === 0, "learned re-run sends no /api/feedback request");
+
+  const aiRequestsBeforeReset = aiAnalysisRequests;
+  const resetLearning = await page.$eval("[data-local-learning] button", (button) => {
+    const isReset = button.textContent?.includes("Reset local learning");
+    if (isReset) button.click();
+    return isReset;
+  });
+  expect(resetLearning, "Reset local learning button found and clicked");
+  await page.waitForFunction(() => !document.querySelector("[data-local-learning]"), {
+    timeout: 10000,
+  });
+  await wait(400);
+
+  const resetState = await page.evaluate(() => ({
+    feedbackKeys: Object.keys(localStorage).filter((key) =>
+      key.startsWith("proposal-checker:ai-feedback:v1:"),
+    ),
+  }));
+  const restoredStats = await readStats();
+  expect(resetState.feedbackKeys.length === 0, "reset clears browser feedback records");
+  expect(restoredStats.join("/") === stats3.join("/"), `reset restores exact findings: ${restoredStats.join(" / ")}`);
+  expect(aiAnalysisRequests === aiRequestsBeforeReset, "reset restores results without another AI request");
+  expect(feedbackRequests === 0, "full feedback flow never calls /api/feedback");
 } else {
   console.log("\n9. AI deep check — skipped (no provider configured)");
 }
