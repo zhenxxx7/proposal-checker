@@ -8,6 +8,14 @@ import { parsePptx } from "../lib/pptx";
 import { aiConfigFromEnv } from "../lib/ai/config";
 import { isArchivedPromptVersion, PROMPT_ARCHIVE, promptVersionFor } from "../lib/ai/prompts";
 import {
+  cookieValue,
+  createSignedExpiryToken,
+  secretsMatch,
+  verifySignedExpiryToken,
+} from "../lib/adminAuth";
+import { groupFeedbackForReview, type AdminFeedbackRow } from "../lib/adminServer";
+import { dpoRecord, effectiveCorrection, exportEligible, sftRecord } from "../lib/feedbackExport";
+import {
   applyFeedbackLearning,
   applySharedFeedbackPolicy,
   createFeedbackDeckIdentity,
@@ -239,6 +247,8 @@ verifyLocalFeedbackLearning();
 verifyReceivedAtOrdering();
 verifyRequestGuards();
 verifyRecordFieldsAndPromptVersions();
+verifyAdminTokens();
+verifyExportSerializers();
 console.log("PASS feedback regressions: rules, preview fills, structured ratings, local and shared learning.");
 
 function xml(value: string) {
@@ -630,6 +640,136 @@ function verifyRecordFieldsAndPromptVersions() {
   assert.ok(
     isFeedbackRecord({ ...record, correction: undefined, reason: undefined }),
     "details stay optional for old clients",
+  );
+}
+
+function verifyAdminTokens() {
+  const secret = "unit-test-secret";
+  const now = 1_750_000_000_000;
+  const token = createSignedExpiryToken(secret, "admin-session", 60_000, now);
+  assert.ok(verifySignedExpiryToken(secret, "admin-session", token, now + 30_000), "valid token verifies");
+  assert.ok(!verifySignedExpiryToken(secret, "admin-session", token, now + 60_001), "expired token is rejected");
+  assert.ok(!verifySignedExpiryToken("other-secret", "admin-session", token, now), "wrong secret is rejected");
+  assert.ok(!verifySignedExpiryToken(secret, "feedback-anon", token, now), "wrong purpose is rejected");
+  const tampered = token.slice(0, -2) + (token.endsWith("aa") ? "bb" : "aa");
+  assert.ok(!verifySignedExpiryToken(secret, "admin-session", tampered, now), "tampered mac is rejected");
+  const [, expires, mac] = token.split(".");
+  assert.ok(
+    !verifySignedExpiryToken(secret, "admin-session", `v1.${Number(expires) + 9_999_999}.${mac}`, now),
+    "extending the expiry invalidates the mac",
+  );
+  assert.ok(!verifySignedExpiryToken(secret, "admin-session", "", now), "empty token is rejected");
+
+  assert.ok(secretsMatch("token-a", "token-a"), "equal secrets match");
+  assert.ok(!secretsMatch("token-a", "token-b"), "different secrets do not match");
+  assert.ok(!secretsMatch("short", "a-much-longer-admin-token-value"), "length mismatch never throws");
+
+  assert.equal(cookieValue("a=1; admin_session=v1.2.3; b=2", "admin_session"), "v1.2.3", "cookie parser finds values");
+  assert.equal(cookieValue("a=1", "admin_session"), undefined, "missing cookie is undefined");
+  assert.equal(cookieValue(null, "admin_session"), undefined, "absent header is undefined");
+}
+
+function verifyExportSerializers() {
+  const baseRow: AdminFeedbackRow = {
+    id: "row-1",
+    finding_fingerprint: "finding-v1-export",
+    learning_key: "feedback-rule-v1-export",
+    deck_fingerprint: "deck-v1-0123456789abcdef",
+    slide_count: 5,
+    rating: "not-useful",
+    source: "ai-text",
+    code: "ai.text",
+    category: "typo",
+    finding: {
+      source: "ai-text",
+      code: "ai.text",
+      slide: 4,
+      severity: "warn",
+      category: "typo",
+      title: "“recieve”",
+      detail: "Misspelling of receive.",
+      quote: "recieve",
+      suggestion: "original-suggestion",
+    },
+    correction: "user-correction",
+    reason: "AI misread the term.",
+    review_status: "approved",
+    review_note: null,
+    review_correction: null,
+    reviewed_by: "admin",
+    reviewed_at: "2026-07-25T10:00:00.000Z",
+    prompt_version: promptVersionFor("ai-text"),
+    server_provider: "gemini",
+    server_model: "gemini-2.5-pro",
+    provider: "gemini",
+    model: "gemini-2.5-pro",
+    provenance: "server-stamped",
+    analysis_input_id: null,
+    created_at: "2026-07-25T09:59:00.000Z",
+    received_at: "2026-07-25T09:59:01.000Z",
+  };
+
+  assert.equal(effectiveCorrection(baseRow), "user-correction", "reviewer correction applies");
+  assert.equal(
+    effectiveCorrection({ ...baseRow, review_correction: "admin-correction" }),
+    "admin-correction",
+    "admin-edited correction wins over the reviewer text",
+  );
+  assert.equal(effectiveCorrection({ ...baseRow, correction: "  " }), null, "whitespace never counts as a correction");
+
+  assert.ok(exportEligible(baseRow, "sft"), "approved not-useful with correction is SFT-eligible");
+  assert.ok(exportEligible(baseRow, "dpo"), "approved correction forms a DPO pair");
+  assert.ok(
+    !exportEligible({ ...baseRow, review_status: "pending" }, "sft"),
+    "pending rows never export",
+  );
+  assert.ok(
+    !exportEligible({ ...baseRow, correction: null }, "sft"),
+    "a not-useful row without a correction has no trustworthy target",
+  );
+  assert.ok(
+    exportEligible({ ...baseRow, rating: "useful", correction: null }, "sft"),
+    "approved useful findings export as-is",
+  );
+  assert.ok(
+    !exportEligible({ ...baseRow, rating: "useful", correction: null }, "dpo"),
+    "no correction means no preference pair",
+  );
+
+  const sft = sftRecord(baseRow);
+  assert.equal(sft.messages[0].role, "system");
+  assert.equal(
+    sft.messages[0].content,
+    PROMPT_ARCHIVE[promptVersionFor("ai-text")],
+    "sft system message is the archived prompt for the row's version",
+  );
+  assert.equal(sft.messages[1].content, "", "user content stays empty until input capture lands");
+  const sftAssistant = JSON.parse(sft.messages[2].content) as { findings: { suggestion: string; quote: string }[] };
+  assert.equal(sftAssistant.findings[0].suggestion, "user-correction", "sft assistant target is corrected");
+  assert.equal(sftAssistant.findings[0].quote, "recieve", "wire finding keeps the original quote");
+  assert.equal(sft.metadata.input_available, false, "missing analysis input is reported");
+  assert.equal(
+    sftRecord({ ...baseRow, analysis_input_id: `input-v1-${"a".repeat(32)}` }).metadata.input_available,
+    true,
+    "linked analysis input flips the flag",
+  );
+
+  const dpo = dpoRecord(baseRow);
+  const preferred = JSON.parse(dpo.preferred_output[0].content) as { findings: { suggestion: string }[] };
+  const rejected = JSON.parse(dpo.non_preferred_output[0].content) as { findings: { suggestion: string }[] };
+  assert.equal(preferred.findings[0].suggestion, "user-correction", "dpo preferred output is the correction");
+  assert.equal(rejected.findings[0].suggestion, "original-suggestion", "dpo rejected output is the AI original");
+
+  const groups = groupFeedbackForReview([
+    baseRow,
+    { ...baseRow, id: "row-2" },
+    { ...baseRow, id: "row-3", learning_key: "feedback-rule-v1-other" },
+  ]);
+  assert.equal(groups.length, 2, "rows group by learning key");
+  assert.deepEqual(
+    groups.map((group) => group.rows.length),
+    [2, 1],
+    "group order follows first appearance",
   );
 }
 

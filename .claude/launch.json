@@ -19,7 +19,7 @@
       "runtimeArgs": [
         "-NoProfile",
         "-Command",
-        "$env:AI_PROVIDER='custom'; $env:AI_BASE_URL='http://localhost:11435/v1'; $env:AI_MODEL='mock'; $env:AI_API_KEY='mock'; $env:FEEDBACK_PROMPT_MEMORY_TTL_MS='0'; npm run dev"
+        "$env:AI_PROVIDER='custom'; $env:AI_BASE_URL='http://localhost:11435/v1'; $env:AI_MODEL='mock'; $env:AI_API_KEY='mock'; $env:FEEDBACK_PROMPT_MEMORY_TTL_MS='0'; $env:ADMIN_TOKEN='dev-admin-token-0f4a9c2e7b1d8356a2c4e6f8091b3d5f'; npm run dev"
       ],
       "port": 3000
     }

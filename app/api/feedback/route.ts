@@ -1,6 +1,6 @@
 import { isFeedbackRecord } from "@/lib/feedback";
 import { saveSharedFeedback, sharedFeedbackConfigured } from "@/lib/feedbackServer";
-import { boundedJsonError, isTrustedOrigin, readBoundedJson } from "@/lib/requestGuards";
+import { boundedJsonError, hasValidFeedbackToken, isTrustedOrigin, readBoundedJson } from "@/lib/requestGuards";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,6 +13,7 @@ export async function POST(request: Request) {
     return Response.json({ stored: false, configured: false });
   }
   if (!isTrustedOrigin(request)) return Response.json({ error: "Forbidden" }, { status: 403 });
+  if (!hasValidFeedbackToken(request)) return Response.json({ error: "Forbidden" }, { status: 403 });
 
   const body = await readBoundedJson(request, MAX_BODY_BYTES);
   if (!body.ok) return Response.json(boundedJsonError(body.status), { status: body.status });

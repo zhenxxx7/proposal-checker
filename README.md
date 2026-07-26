@@ -170,9 +170,22 @@ identify as same-origin browser traffic (`Origin` or `Sec-Fetch-Site` header),
 enforce body-size caps on the actual bytes, and shared writes require a
 content-derived `deck-v1-` fingerprint — a raw filename can never become a
 memory key. `FEEDBACK_SHARED_ENABLED=false` pauses shared memory without
-removing the database. Sign-in for reviewers and rate limiting arrive with the
-admin review queue; until then, prefer the private development workspace for
-shared feedback on anything public.
+removing the database. With `FEEDBACK_TOKEN_SECRET` set, feedback writes also
+require a signed anonymous cookie minted by `/api/status`. For rate limiting
+on a public deployment, add a Vercel WAF rule on `/api/feedback*` and the
+analyze routes — the app deliberately keeps no per-IP counters of its own.
+
+### Admin review queue
+
+Set `ADMIN_TOKEN` (32+ random bytes) and open `/admin`: every rating arrives
+as **pending**, and the queue approves, rejects, or corrects it. Approval
+matters twice — with `FEEDBACK_REQUIRE_APPROVAL=true` only approved rows steer
+prompts and suppression, and the training exports
+(`/api/admin/export?format=sft|dpo`) only ever contain approved rows. A
+"not useful" rating without a corrected suggestion is flagged in the queue:
+it still suppresses repeats, but only a correction makes it trainable.
+Verification: `npm run verify:admin -- <adminToken>` (dev server + Neon
+required).
 
 **If the deck is confidential, skip the AI pass.** The rule checks run entirely
 in the browser and upload nothing; only the AI pass sends data out, and Gemini's

@@ -58,6 +58,20 @@ export function sharedFeedbackConfigured(): boolean {
   return Boolean(process.env.DATABASE_URL) && process.env.FEEDBACK_SHARED_ENABLED !== "false";
 }
 
+/**
+ * When ON, only admin-approved rows steer prompts and suppression. Explicit
+ * opt-in (not inferred from ADMIN_TOKEN) so configuring auth does not silently
+ * blank the learned memory before the backlog has been reviewed.
+ */
+export function feedbackRequiresApproval(): boolean {
+  return process.env.FEEDBACK_REQUIRE_APPROVAL === "true";
+}
+
+/** Exported for the admin queue module, which shares the lazy schema bootstrap. */
+export async function ensureFeedbackSchema(): Promise<void> {
+  return ensureSchema();
+}
+
 function getSql(): NeonQueryFunction<false, false> {
   if (!process.env.DATABASE_URL) throw new Error("Shared feedback database is not configured.");
   if (!sql) sql = neon(process.env.DATABASE_URL);
@@ -242,6 +256,9 @@ async function queryPromptMemory({
 }): Promise<SharedFeedbackPromptMemory> {
   await ensureSchema();
   const db = getSql();
+  // When the approval gate is ON, unreviewed rows are invisible to learning.
+  // The literal is server-controlled, never user input.
+  const approvalGate = feedbackRequiresApproval() ? "AND review_status = 'approved'" : "";
   // Bounded reads: the latest rating per deck for the most recently active
   // multi-deck patterns, plus every pattern this deck rated itself. Without
   // the bounds this scanned the entire table on every analyze call.
@@ -251,10 +268,10 @@ async function queryPromptMemory({
         finding_fingerprint, deck_fingerprint, learning_key, rating,
         source, code, category, finding, received_at
       FROM ${TABLE}
-      WHERE source = $1 AND learning_key IN (
+      WHERE source = $1 ${approvalGate} AND learning_key IN (
         SELECT learning_key
         FROM ${TABLE}
-        WHERE source = $1
+        WHERE source = $1 ${approvalGate}
         GROUP BY learning_key
         HAVING COUNT(DISTINCT deck_fingerprint) >= 2
         ORDER BY MAX(received_at) DESC
@@ -272,7 +289,7 @@ async function queryPromptMemory({
             finding_fingerprint, deck_fingerprint, learning_key, rating,
             source, code, category, finding, received_at
           FROM ${TABLE}
-          WHERE source = $1 AND deck_fingerprint = $2
+          WHERE source = $1 AND deck_fingerprint = $2 ${approvalGate}
           ORDER BY learning_key, received_at DESC, id DESC
           LIMIT ${SAME_DECK_ROW_LIMIT}
         `,
@@ -367,13 +384,14 @@ export async function resolveSharedFeedbackPolicy(
 ): Promise<FeedbackPolicyResponse> {
   if (!sharedFeedbackConfigured() || !request.patterns.length) return emptyPolicy(false);
   await ensureSchema();
+  const approvalGate = feedbackRequiresApproval() ? "AND review_status = 'approved'" : "";
   const keys = [...new Set(request.patterns.map((pattern) => pattern.learningKey))];
   const rows = (await getSql().query(
     `
       SELECT DISTINCT ON (deck_fingerprint, learning_key)
         finding_fingerprint, deck_fingerprint, learning_key, rating
       FROM ${TABLE}
-      WHERE learning_key = ANY($1::text[])
+      WHERE learning_key = ANY($1::text[]) ${approvalGate}
       ORDER BY deck_fingerprint, learning_key, received_at DESC, id DESC
     `,
     [keys],

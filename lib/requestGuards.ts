@@ -6,6 +6,16 @@
  * memory. This is abuse prevention, not authentication.
  */
 
+import {
+  cookieValue,
+  createSignedExpiryToken,
+  FEEDBACK_TOKEN_COOKIE,
+  FEEDBACK_TOKEN_PURPOSE,
+  FEEDBACK_TOKEN_TTL_MS,
+  serializeCookie,
+  verifySignedExpiryToken,
+} from "./adminAuth";
+
 export interface OriginSignals {
   origin: string | null;
   secFetchSite: string | null;
@@ -72,4 +82,34 @@ export async function readBoundedJson(request: Request, maxBytes: number): Promi
 
 export function boundedJsonError(status: 400 | 413): { error: string } {
   return { error: status === 413 ? "Payload too large" : "Invalid JSON" };
+}
+
+/**
+ * Anonymous feedback token: /api/status mints a signed HttpOnly cookie the
+ * browser automatically presents on feedback writes. Not identity — just
+ * proof the caller loaded the app first, raising the bar over pure
+ * origin-header checks. Absent FEEDBACK_TOKEN_SECRET the check degrades to
+ * origin-only, keeping local dev friction-free.
+ */
+export function hasValidFeedbackToken(request: Request): boolean {
+  const secret = process.env.FEEDBACK_TOKEN_SECRET;
+  if (!secret) return true;
+  return verifySignedExpiryToken(
+    secret,
+    FEEDBACK_TOKEN_PURPOSE,
+    cookieValue(request.headers.get("cookie"), FEEDBACK_TOKEN_COOKIE),
+    Date.now(),
+  );
+}
+
+/** Set-Cookie value for a fresh anon token, or null when none is needed. */
+export function mintFeedbackTokenCookie(request: Request): string | null {
+  const secret = process.env.FEEDBACK_TOKEN_SECRET;
+  if (!secret || hasValidFeedbackToken(request)) return null;
+  return serializeCookie(
+    FEEDBACK_TOKEN_COOKIE,
+    createSignedExpiryToken(secret, FEEDBACK_TOKEN_PURPOSE, FEEDBACK_TOKEN_TTL_MS, Date.now()),
+    Math.floor(FEEDBACK_TOKEN_TTL_MS / 1000),
+    new URL(request.url).protocol === "https:",
+  );
 }
