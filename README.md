@@ -164,8 +164,15 @@ uploaded `.pptx`, slide preview images, or raw image data. Gemini receives only
 small retrieved calibration examples relevant to current text/image pass, never
 whole feedback database. This is retrieval-augmented, RLHF-like feedback
 learning, not continuous RLHF or Gemini weight training.
-Use it only in the private development workspace for now; add sign-in and rate
-limiting before enabling shared feedback on a public deployment.
+
+Write protection: the feedback and AI analyze routes only accept requests that
+identify as same-origin browser traffic (`Origin` or `Sec-Fetch-Site` header),
+enforce body-size caps on the actual bytes, and shared writes require a
+content-derived `deck-v1-` fingerprint — a raw filename can never become a
+memory key. `FEEDBACK_SHARED_ENABLED=false` pauses shared memory without
+removing the database. Sign-in for reviewers and rate limiting arrive with the
+admin review queue; until then, prefer the private development workspace for
+shared feedback on anything public.
 
 **If the deck is confidential, skip the AI pass.** The rule checks run entirely
 in the browser and upload nothing; only the AI pass sends data out, and Gemini's

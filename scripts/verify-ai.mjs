@@ -15,7 +15,8 @@ const expect = (cond, msg) => {
 const post = async (path, body) => {
   const res = await fetch(`${base}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    // The routes refuse non-browser requests; identify as same-origin.
+    headers: { "content-type": "application/json", origin: new URL(base).origin },
     body: JSON.stringify(body),
   });
   return { status: res.status, json: await res.json() };

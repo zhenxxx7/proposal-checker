@@ -73,6 +73,9 @@ export default function Page() {
   const analysisRunning = useRef(false);
   const deckLoading = useRef(false);
   const rawAiFindings = useRef<Finding[]>([]);
+  // Latest submitted rating per finding, so a slow shared write that loses a
+  // race against a newer click cannot store its stale record locally.
+  const pendingRatings = useRef(new Map<string, FeedbackRating>());
 
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
@@ -234,7 +237,13 @@ export default function Page() {
       // must not leave automatic AI analysis disabled for the whole session.
       const [parsed, providerStatus] = await Promise.all([readDeck(), fetchAiStatus()]);
       setStatus(providerStatus);
-      setFeedback(loadFeedbackSelections(createFeedbackDeckIdentity(name, parsed)));
+      // Shared mode restores selections from the policy response after the
+      // run; seeding from localStorage there would resurrect divergent state.
+      setFeedback(
+        providerStatus.feedbackConfigured
+          ? {}
+          : loadFeedbackSelections(createFeedbackDeckIdentity(name, parsed)),
+      );
       setSlide(1);
       setView("summary");
 
@@ -318,22 +327,29 @@ export default function Page() {
       model: status?.model,
     });
     const fingerprint = findingFingerprint(finding);
-    const stored = storeFeedbackRecord(record);
     if (!status?.feedbackConfigured) {
+      const stored = storeFeedbackRecord(record);
       setFeedback((current) => ({
         ...current,
         [fingerprint]: { rating, delivery: stored ? "local" : "error" },
       }));
       return;
     }
+    // Shared mode keeps ratings in Neon only. Writing localStorage as well
+    // would build an invisible second history that the app never reads back;
+    // the browser copy is now strictly a fallback for a failed shared write.
+    pendingRatings.current.set(fingerprint, rating);
     setFeedback((current) => ({
       ...current,
-      [fingerprint]: { rating, delivery: stored ? "syncing" : "error" },
+      [fingerprint]: { rating, delivery: "syncing" },
     }));
     void storeSharedFeedbackRecord(record).then((shared) => {
+      // A newer choice won while the older network request was in flight.
+      if (pendingRatings.current.get(fingerprint) !== rating) return;
+      pendingRatings.current.delete(fingerprint);
+      const stored = shared ? false : storeFeedbackRecord(record);
       setFeedback((current) => {
         const currentSelection = current[fingerprint];
-        // A newer choice won while the older network request was in flight.
         if (!currentSelection || currentSelection.rating !== rating) return current;
         return {
           ...current,

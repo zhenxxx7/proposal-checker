@@ -264,7 +264,12 @@ if (status.configured) {
   expect(feedbackState.value === "not-useful", "Not useful selection applied");
   const expectedFeedbackStatus = sharedFeedbackConfigured ? "Shared memory" : "Learned locally";
   expect(feedbackState.status?.trim() === expectedFeedbackStatus, `rating persisted (${feedbackState.status})`);
-  expect(feedbackState.stored, "rating written to browser storage");
+  expect(
+    sharedFeedbackConfigured ? !feedbackState.stored : feedbackState.stored,
+    sharedFeedbackConfigured
+      ? "shared rating is not duplicated into browser storage"
+      : "rating written to browser storage",
+  );
   expect(
     feedbackWrites === (sharedFeedbackConfigured ? 1 : 0),
     sharedFeedbackConfigured ? "rating writes through /api/feedback" : "local fallback skips /api/feedback write",

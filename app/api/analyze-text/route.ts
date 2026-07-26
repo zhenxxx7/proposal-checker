@@ -1,7 +1,11 @@
 import { askForFindings } from "@/lib/ai/client";
 import { resolveSharedFeedbackPromptMemory } from "@/lib/feedbackServer";
+import { boundedJsonError, isTrustedOrigin, readBoundedJson } from "@/lib/requestGuards";
 
 export const maxDuration = 300;
+
+// Slide text only; a full deck of prose stays far below this.
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 interface Body {
   slides: { n: number; texts: string[] }[];
@@ -30,7 +34,13 @@ Respond with JSON only, matching: {"findings":[{"slide":1,"severity":"error","ca
 If the deck is clean, return {"findings":[]}. An empty array is a valid and common answer.`;
 
 export async function POST(req: Request) {
-  const { slides, deckFingerprint: requestedDeckFingerprint } = (await req.json()) as Body;
+  // This route spends paid AI tokens; scripted non-browser calls are refused.
+  if (!isTrustedOrigin(req)) return Response.json({ findings: [], error: "Forbidden" }, { status: 403 });
+  const parsed = await readBoundedJson(req, MAX_BODY_BYTES);
+  if (!parsed.ok) {
+    return Response.json({ findings: [], ...boundedJsonError(parsed.status) }, { status: parsed.status });
+  }
+  const { slides, deckFingerprint: requestedDeckFingerprint } = parsed.value as Body;
   if (!Array.isArray(slides) || !slides.length) return Response.json({ findings: [] });
 
   const deck = slides.map((s) => `--- SLIDE ${s.n} ---\n${s.texts.join("\n")}`).join("\n\n");

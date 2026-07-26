@@ -24,7 +24,8 @@ export interface SharedFeedbackPromptRow extends SharedFeedbackPolicyRow {
   code: string;
   category: string;
   finding: unknown;
-  received_at?: string;
+  /** The Neon driver deserializes TIMESTAMPTZ to a Date; fixtures use strings. */
+  received_at?: string | Date;
 }
 
 export interface SharedFeedbackPromptExample {
@@ -92,6 +93,10 @@ async function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS proposal_checker_feedback_prompt_idx
       ON ${TABLE} (source, learning_key, deck_fingerprint, received_at DESC)
     `);
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS proposal_checker_feedback_deck_prompt_idx
+      ON ${TABLE} (source, deck_fingerprint, learning_key, received_at DESC)
+    `);
   })().catch((error) => {
     schemaReady = null;
     throw error;
@@ -99,8 +104,16 @@ async function ensureSchema(): Promise<void> {
   return schemaReady;
 }
 
+const DECK_FINGERPRINT_PATTERN = /^deck-v1-[a-f0-9]{16}$/;
+
 /** Stores only the rated finding metadata. The uploaded deck file is never persisted. */
 export async function saveSharedFeedback(record: FeedbackRecord): Promise<void> {
+  // The real client always sends a content-derived fingerprint; a filename
+  // fallback would let hand-crafted requests store raw deck names.
+  const deckFingerprint = record.deck.fingerprint;
+  if (!deckFingerprint || !DECK_FINGERPRINT_PATTERN.test(deckFingerprint)) {
+    throw new Error("Shared feedback requires a content-derived deck fingerprint.");
+  }
   await ensureSchema();
   const db = getSql();
   const finding = record.finding;
@@ -120,7 +133,7 @@ export async function saveSharedFeedback(record: FeedbackRecord): Promise<void> 
       record.schemaVersion,
       record.fingerprint,
       feedbackLearningKey(finding),
-      record.deck.fingerprint ?? `legacy:${record.deck.name}`,
+      deckFingerprint,
       record.deck.slideCount,
       record.rating,
       finding.source,
@@ -134,10 +147,26 @@ export async function saveSharedFeedback(record: FeedbackRecord): Promise<void> 
   );
 }
 
+/** Most recently active patterns considered for cross-deck generalization. */
+const CROSS_DECK_PATTERN_LIMIT = 40;
+const CROSS_DECK_ROW_LIMIT = 400;
+const SAME_DECK_ROW_LIMIT = 200;
+
+const promptMemoryCache = new Map<string, { at: number; value: Promise<SharedFeedbackPromptMemory> }>();
+
+function promptMemoryTtlMs(): number {
+  const raw = Number(process.env.FEEDBACK_PROMPT_MEMORY_TTL_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 60_000;
+}
+
 /**
  * Retrieves conservative human-rated examples for the next Gemini request.
  * Same-deck feedback applies immediately. Cross-deck feedback needs two decks
  * and 80% agreement. This is retrieval, not Gemini weight training.
+ *
+ * An image-heavy deck issues one analyze request per image, each of which asks
+ * for the identical memory; the short-TTL promise cache collapses that fan-out
+ * on warm instances instead of re-scanning the table N times per deck.
  */
 export async function resolveSharedFeedbackPromptMemory({
   deckFingerprint,
@@ -147,19 +176,71 @@ export async function resolveSharedFeedbackPromptMemory({
   source: SharedFeedbackSource;
 }): Promise<SharedFeedbackPromptMemory> {
   if (!sharedFeedbackConfigured()) return emptyPromptMemory(false);
+  const ttl = promptMemoryTtlMs();
+  if (ttl === 0) return queryPromptMemory({ deckFingerprint, source });
+  const key = `${source}|${deckFingerprint ?? ""}`;
+  const cached = promptMemoryCache.get(key);
+  if (cached && Date.now() - cached.at < ttl) return cached.value;
+  const value = queryPromptMemory({ deckFingerprint, source }).catch((error) => {
+    // Never cache failures: the next request should retry the database.
+    promptMemoryCache.delete(key);
+    throw error;
+  });
+  promptMemoryCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+async function queryPromptMemory({
+  deckFingerprint,
+  source,
+}: {
+  deckFingerprint?: string;
+  source: SharedFeedbackSource;
+}): Promise<SharedFeedbackPromptMemory> {
   await ensureSchema();
-  const rows = (await getSql().query(
+  const db = getSql();
+  // Bounded reads: the latest rating per deck for the most recently active
+  // multi-deck patterns, plus every pattern this deck rated itself. Without
+  // the bounds this scanned the entire table on every analyze call.
+  const crossDeckRows = db.query(
     `
       SELECT DISTINCT ON (deck_fingerprint, learning_key)
         finding_fingerprint, deck_fingerprint, learning_key, rating,
         source, code, category, finding, received_at
       FROM ${TABLE}
-      WHERE source = $1
+      WHERE source = $1 AND learning_key IN (
+        SELECT learning_key
+        FROM ${TABLE}
+        WHERE source = $1
+        GROUP BY learning_key
+        HAVING COUNT(DISTINCT deck_fingerprint) >= 2
+        ORDER BY MAX(received_at) DESC
+        LIMIT ${CROSS_DECK_PATTERN_LIMIT}
+      )
       ORDER BY deck_fingerprint, learning_key, received_at DESC, id DESC
+      LIMIT ${CROSS_DECK_ROW_LIMIT}
     `,
     [source],
-  )) as SharedFeedbackPromptRow[];
-  return buildSharedFeedbackPromptMemory({ deckFingerprint, source }, rows);
+  );
+  const sameDeckRows = deckFingerprint
+    ? db.query(
+        `
+          SELECT DISTINCT ON (learning_key)
+            finding_fingerprint, deck_fingerprint, learning_key, rating,
+            source, code, category, finding, received_at
+          FROM ${TABLE}
+          WHERE source = $1 AND deck_fingerprint = $2
+          ORDER BY learning_key, received_at DESC, id DESC
+          LIMIT ${SAME_DECK_ROW_LIMIT}
+        `,
+        [source, deckFingerprint],
+      )
+    : Promise.resolve([]);
+  const [cross, same] = await Promise.all([crossDeckRows, sameDeckRows]);
+  return buildSharedFeedbackPromptMemory(
+    { deckFingerprint, source },
+    [...same, ...cross] as SharedFeedbackPromptRow[],
+  );
 }
 
 /** Pure builder keeps prompt consensus and injection defenses regression-testable. */
@@ -321,15 +402,27 @@ function toPromptExample(
   };
 }
 
+/**
+ * Numeric timestamp for ordering. Stringifying a Date puts the weekday name
+ * first ("Sat Jul 18..."), so lexicographic comparison ordered rows by weekday
+ * instead of by time — the reason this must never use localeCompare.
+ */
+function receivedAtMs(row: SharedFeedbackPromptRow): number {
+  if (row.received_at instanceof Date) return row.received_at.getTime();
+  const parsed = Date.parse(String(row.received_at ?? ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function newest(rows: readonly SharedFeedbackPromptRow[]): SharedFeedbackPromptRow | undefined {
-  return [...rows].sort((a, b) => String(b.received_at ?? "").localeCompare(String(a.received_at ?? "")))[0];
+  return [...rows].sort(
+    (a, b) => receivedAtMs(b) - receivedAtMs(a) || b.finding_fingerprint.localeCompare(a.finding_fingerprint),
+  )[0];
 }
 
 function promptRowIsNewer(candidate: SharedFeedbackPromptRow, current: SharedFeedbackPromptRow): boolean {
-  const candidateTime = String(candidate.received_at ?? "");
-  const currentTime = String(current.received_at ?? "");
-  return candidateTime > currentTime ||
-    (candidateTime === currentTime && candidate.finding_fingerprint > current.finding_fingerprint);
+  const diff = receivedAtMs(candidate) - receivedAtMs(current);
+  if (diff !== 0) return diff > 0;
+  return candidate.finding_fingerprint > current.finding_fingerprint;
 }
 
 function compactPromptText(value: unknown): string {

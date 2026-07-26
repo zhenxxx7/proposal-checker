@@ -1,7 +1,11 @@
 import { askForFindings } from "@/lib/ai/client";
 import { resolveSharedFeedbackPromptMemory } from "@/lib/feedbackServer";
+import { boundedJsonError, isTrustedOrigin, readBoundedJson } from "@/lib/requestGuards";
 
 export const maxDuration = 300;
+
+// One downscaled JPEG as base64; Vercel rejects bodies above ~4.5MB anyway.
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 interface Body {
   slide: number;
@@ -35,7 +39,13 @@ Respond with JSON only, matching: {"findings":[{"slide":1,"severity":"error","ca
 If the image has no text, or the text is clean, return {"findings":[]}. That is the expected result for most images.`;
 
 export async function POST(req: Request) {
-  const { slide, image, mediaType, displayPx, deckFingerprint: requestedDeckFingerprint } = (await req.json()) as Body;
+  // This route spends paid AI tokens; scripted non-browser calls are refused.
+  if (!isTrustedOrigin(req)) return Response.json({ findings: [], error: "Forbidden" }, { status: 403 });
+  const parsed = await readBoundedJson(req, MAX_BODY_BYTES);
+  if (!parsed.ok) {
+    return Response.json({ findings: [], ...boundedJsonError(parsed.status) }, { status: parsed.status });
+  }
+  const { slide, image, mediaType, displayPx, deckFingerprint: requestedDeckFingerprint } = parsed.value as Body;
 
   if (!image || !mediaType) {
     return Response.json({ findings: [], error: "image and mediaType required" }, { status: 400 });

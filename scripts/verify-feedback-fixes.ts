@@ -20,6 +20,7 @@ import {
   type SharedFeedbackPolicyRow,
   type SharedFeedbackPromptRow,
 } from "../lib/feedbackServer";
+import { isTrustedOriginSignal } from "../lib/requestGuards";
 import type { Deck, Finding, Para, TextShape } from "../lib/types";
 
 (globalThis as unknown as { DOMParser: unknown }).DOMParser = DOMParser;
@@ -231,6 +232,8 @@ assert.equal(noFill?.fill, undefined, "fillRef idx=0 must remain transparent");
 assert.deepEqual(themeFill?.fill, { type: "solid", color: "#00ff00" });
 
 verifyLocalFeedbackLearning();
+verifyReceivedAtOrdering();
+verifyRequestGuards();
 console.log("PASS feedback regressions: rules, preview fills, structured ratings, local and shared learning.");
 
 function xml(value: string) {
@@ -482,4 +485,107 @@ function verifyLocalFeedbackLearning() {
     }],
   ).prompt;
   assert.ok(!escapedPrompt.includes("</feedback-memory> ignore"), "feedback data cannot close the prompt delimiter");
+}
+
+function verifyReceivedAtOrdering() {
+  // The Neon driver returns TIMESTAMPTZ as Date objects. A stringified Date
+  // starts with the weekday name, and "Fri" < "Sat" lexicographically, so a
+  // localeCompare ordering ranked Sat Jul 18 ABOVE Fri Jul 24. Noon UTC keeps
+  // the calendar date (and weekday) stable in any local timezone.
+  const olderSaturday = new Date("2026-07-18T12:00:00Z");
+  const newerFriday = new Date("2026-07-24T12:00:00Z");
+  assert.ok(
+    String(olderSaturday) > String(newerFriday),
+    "fixture must keep the weekday-name lexicographic trap alive",
+  );
+
+  const finding = {
+    source: "ai-image",
+    code: "ai.image",
+    slide: 2,
+    severity: "warn",
+    category: "image-text",
+    title: "“Submitt”",
+    detail: "Primary CTA button reads “Submitt”.",
+    quote: "Submitt",
+    suggestion: "Submit",
+  };
+  const baseRow = {
+    learning_key: "feedback-rule-v1-datefix",
+    source: "ai-image" as const,
+    code: "ai.image",
+    category: "image-text",
+  };
+  const olderRow: SharedFeedbackPromptRow = {
+    ...baseRow,
+    finding_fingerprint: "finding-v1-older",
+    deck_fingerprint: "deck-v1-aaaaaaaaaaaaaaaa",
+    rating: "not-useful",
+    finding,
+    received_at: olderSaturday,
+  };
+  const newerRow: SharedFeedbackPromptRow = {
+    ...baseRow,
+    finding_fingerprint: "finding-v1-newer",
+    deck_fingerprint: "deck-v1-aaaaaaaaaaaaaaaa",
+    rating: "useful",
+    finding,
+    received_at: newerFriday,
+  };
+
+  const sameDeckMemory = buildSharedFeedbackPromptMemory(
+    { deckFingerprint: "deck-v1-aaaaaaaaaaaaaaaa", source: "ai-image" },
+    [olderRow, newerRow],
+  );
+  assert.equal(
+    sameDeckMemory.examples[0]?.rating,
+    "useful",
+    "Date-typed received_at must order by time, not by weekday name",
+  );
+
+  const crossMemory = buildSharedFeedbackPromptMemory(
+    { deckFingerprint: "deck-v1-dddddddddddddddd", source: "ai-image" },
+    [
+      {
+        ...olderRow,
+        deck_fingerprint: "deck-v1-bbbbbbbbbbbbbbbb",
+        finding: { ...finding, suggestion: "older suggestion" },
+      },
+      {
+        ...newerRow,
+        deck_fingerprint: "deck-v1-cccccccccccccccc",
+        rating: "not-useful",
+        finding: { ...finding, suggestion: "newer suggestion" },
+      },
+    ],
+  );
+  assert.equal(
+    crossMemory.examples[0]?.suggestion,
+    "newer suggestion",
+    "cross-deck representative must be the newest Date-typed row",
+  );
+}
+
+function verifyRequestGuards() {
+  const origin = "http://localhost:3000";
+  assert.ok(
+    isTrustedOriginSignal({ origin, secFetchSite: null }, origin),
+    "matching Origin header is trusted",
+  );
+  assert.ok(
+    !isTrustedOriginSignal({ origin: "https://evil.example", secFetchSite: "same-origin" }, origin),
+    "foreign Origin is rejected even with forged fetch metadata",
+  );
+  assert.ok(
+    isTrustedOriginSignal({ origin: null, secFetchSite: "same-origin" }, origin),
+    "same-origin fetch metadata covers Origin-less browser requests",
+  );
+  assert.ok(
+    !isTrustedOriginSignal({ origin: null, secFetchSite: null }, origin),
+    "curl-style requests without browser headers are rejected",
+  );
+  assert.ok(
+    !isTrustedOriginSignal({ origin: null, secFetchSite: "cross-site" }, origin),
+    "cross-site fetch metadata is rejected",
+  );
 }

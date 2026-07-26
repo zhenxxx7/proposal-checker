@@ -6,6 +6,22 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "mock-ai",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/mock-ai.mjs"],
+      "port": 11435
+    },
+    {
+      "name": "slide-anali-mock-mode",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:AI_PROVIDER='custom'; $env:AI_BASE_URL='http://localhost:11435/v1'; $env:AI_MODEL='mock'; $env:AI_API_KEY='mock'; $env:FEEDBACK_PROMPT_MEMORY_TTL_MS='0'; npm run dev"
+      ],
+      "port": 3000
     }
   ]
 }
