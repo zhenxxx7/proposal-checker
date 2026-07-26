@@ -1,7 +1,7 @@
 import type { Deck, Fill, Finding, Shape } from "./types";
 
 export type FeedbackRating = "useful" | "not-useful";
-export type FeedbackDelivery = "local" | "error";
+export type FeedbackDelivery = "local" | "shared" | "syncing" | "error";
 
 export interface FeedbackRecord {
   schemaVersion: 1;
@@ -83,6 +83,24 @@ export interface FeedbackLearningResult {
 export interface FeedbackDeckIdentity {
   name: string;
   fingerprint: string;
+}
+
+/** A compact, content-free request sent to the shared feedback policy route. */
+export interface FeedbackPolicyPattern {
+  findingFingerprint: string;
+  learningKey: string;
+}
+
+export interface FeedbackPolicyRequest {
+  deckFingerprint: string;
+  patterns: FeedbackPolicyPattern[];
+}
+
+export interface FeedbackPolicyResponse {
+  configured: boolean;
+  suppressedLearningKeys: string[];
+  /** Latest shared rating for each exact finding rendered in this run. */
+  selections: Record<string, FeedbackRating>;
 }
 
 export function isAiFinding(finding: Finding): finding is Finding & {
@@ -259,6 +277,80 @@ export function applyFeedbackLearning(
     return rejected / recordsForPattern.length < 0.8;
   });
   return { findings: kept, skipped: findings.length - kept.length };
+}
+
+/**
+ * Builds the smallest useful payload for the permanent-memory policy lookup.
+ * It contains fingerprints only; uploaded PPTX data and preview imagery never
+ * leave the browser through this request.
+ */
+export function createFeedbackPolicyRequest(
+  deck: FeedbackDeckIdentity,
+  findings: readonly Finding[],
+): FeedbackPolicyRequest {
+  const seen = new Set<string>();
+  const patterns: FeedbackPolicyPattern[] = [];
+  for (const finding of findings) {
+    if (!isAiFinding(finding)) continue;
+    const findingFingerprintValue = findingFingerprint(finding);
+    if (seen.has(findingFingerprintValue)) continue;
+    seen.add(findingFingerprintValue);
+    patterns.push({
+      findingFingerprint: findingFingerprintValue,
+      learningKey: feedbackLearningKey(finding),
+    });
+  }
+  return { deckFingerprint: deck.fingerprint, patterns };
+}
+
+/** Applies a server-resolved policy while preserving every local rule finding. */
+export function applySharedFeedbackPolicy(
+  findings: readonly Finding[],
+  suppressedLearningKeys: readonly string[],
+): FeedbackLearningResult {
+  const suppressed = new Set(suppressedLearningKeys);
+  const kept = findings.filter(
+    (finding) => !isAiFinding(finding) || !suppressed.has(feedbackLearningKey(finding)),
+  );
+  return { findings: kept, skipped: findings.length - kept.length };
+}
+
+export function isFeedbackPolicyRequest(value: unknown): value is FeedbackPolicyRequest {
+  if (!isObject(value) || !shortString(value.deckFingerprint, 128)) return false;
+  if (!Array.isArray(value.patterns) || value.patterns.length > 500) return false;
+  const patternKeys = new Set<string>();
+  for (const pattern of value.patterns) {
+    if (!isObject(pattern)) return false;
+    if (
+      !shortString(pattern.findingFingerprint, 256) ||
+      !shortString(pattern.learningKey, 256) ||
+      !pattern.findingFingerprint.startsWith("finding-v1-") ||
+      !pattern.learningKey.startsWith("feedback-rule-v1-")
+    ) {
+      return false;
+    }
+    if (patternKeys.has(pattern.findingFingerprint)) return false;
+    patternKeys.add(pattern.findingFingerprint);
+  }
+  return true;
+}
+
+export function isFeedbackPolicyResponse(value: unknown): value is FeedbackPolicyResponse {
+  if (!isObject(value) || typeof value.configured !== "boolean") return false;
+  if (!Array.isArray(value.suppressedLearningKeys) || !isObject(value.selections)) return false;
+  if (
+    !value.suppressedLearningKeys.every(
+      (key) => shortString(key, 256) && key.startsWith("feedback-rule-v1-"),
+    )
+  ) {
+    return false;
+  }
+  return Object.entries(value.selections).every(
+    ([fingerprint, rating]) =>
+      shortString(fingerprint, 256) &&
+      fingerprint.startsWith("finding-v1-") &&
+      (rating === "useful" || rating === "not-useful"),
+  );
 }
 
 export function clearStoredFeedbackLearning(): void {

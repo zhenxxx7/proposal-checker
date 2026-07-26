@@ -1,9 +1,11 @@
 import { askForFindings } from "@/lib/ai/client";
+import { resolveSharedFeedbackPromptMemory } from "@/lib/feedbackServer";
 
 export const maxDuration = 300;
 
 interface Body {
   slides: { n: number; texts: string[] }[];
+  deckFingerprint?: unknown;
 }
 
 const SYSTEM = `You proofread client-facing proposal decks before they are submitted. You are the last set of eyes.
@@ -28,18 +30,36 @@ Respond with JSON only, matching: {"findings":[{"slide":1,"severity":"error","ca
 If the deck is clean, return {"findings":[]}. An empty array is a valid and common answer.`;
 
 export async function POST(req: Request) {
-  const { slides } = (await req.json()) as Body;
+  const { slides, deckFingerprint: requestedDeckFingerprint } = (await req.json()) as Body;
   if (!Array.isArray(slides) || !slides.length) return Response.json({ findings: [] });
 
   const deck = slides.map((s) => `--- SLIDE ${s.n} ---\n${s.texts.join("\n")}`).join("\n\n");
+  const feedbackMemory = await promptMemory("ai-text", deckFingerprint(requestedDeckFingerprint));
 
   try {
-    const findings = await askForFindings(SYSTEM, [
+    const findings = await askForFindings(`${SYSTEM}${feedbackMemory.prompt}`, [
       { type: "text", text: `Proofread this deck. ${slides.length} slides.\n\n${deck}` },
     ]);
-    return Response.json({ findings });
+    return Response.json({ findings, feedbackMemory: feedbackMeta(feedbackMemory) });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return Response.json({ findings: [], error: message }, { status: 502 });
   }
+}
+
+async function promptMemory(source: "ai-text" | "ai-image", fingerprint?: string) {
+  try {
+    return await resolveSharedFeedbackPromptMemory({ source, deckFingerprint: fingerprint });
+  } catch (error) {
+    console.error("Shared feedback prompt lookup failed", error);
+    return { configured: false, examples: [], prompt: "" };
+  }
+}
+
+function feedbackMeta(memory: Awaited<ReturnType<typeof promptMemory>>) {
+  return { configured: memory.configured, applied: memory.examples.length };
+}
+
+function deckFingerprint(value: unknown): string | undefined {
+  return typeof value === "string" && /^deck-v1-[a-f0-9]{16}$/.test(value) ? value : undefined;
 }

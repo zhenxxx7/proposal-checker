@@ -106,14 +106,24 @@ export function FindingCard({
               {feedback && (
                 <span
                   data-feedback-status={feedback.delivery}
-                  title={feedback.delivery === "error" ? "Could not save this selection in browser storage." : undefined}
+                  title={
+                    feedback.delivery === "error"
+                      ? "Could not save this selection in browser or shared memory."
+                      : undefined
+                  }
                   className={`text-[10px] ${
                     feedback.delivery === "error"
                       ? "text-amber-600 dark:text-amber-400"
                       : "text-zinc-400 dark:text-zinc-500"
                   }`}
                 >
-                  {feedback.delivery === "error" ? "Save failed" : "Learned locally"}
+                  {feedback.delivery === "error"
+                    ? "Save failed"
+                    : feedback.delivery === "syncing"
+                      ? "Saving..."
+                      : feedback.delivery === "shared"
+                        ? "Shared memory"
+                        : "Learned locally"}
                 </span>
               )}
             </div>

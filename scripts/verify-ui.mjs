@@ -26,6 +26,7 @@ const expect = (cond, msg) => {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const status = await (await fetch(new URL("/api/status", url))).json();
+const sharedFeedbackConfigured = status.feedbackConfigured === true;
 console.log(`\nprovider: ${status.label || "none"} · model: ${status.model || "-"} · configured: ${status.configured}`);
 
 const browser = await puppeteer.launch({
@@ -37,13 +38,15 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 
 const consoleErrors = [];
-let feedbackRequests = 0;
+let feedbackWrites = 0;
+let feedbackPolicyRequests = 0;
 let aiAnalysisRequests = 0;
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
 page.on("request", (request) => {
   const path = new URL(request.url()).pathname;
-  if (path === "/api/feedback") feedbackRequests++;
+  if (path === "/api/feedback") feedbackWrites++;
+  if (path === "/api/feedback/policy") feedbackPolicyRequests++;
   if (path === "/api/analyze-text" || path === "/api/analyze-image") aiAnalysisRequests++;
 });
 
@@ -249,7 +252,7 @@ if (status.configured) {
     () => {
       const select = document.querySelector("[data-group='in-image'] [data-feedback-rating]");
       const status = select?.closest("[data-finding]")?.querySelector("[data-feedback-status]");
-      return select?.value === "not-useful" && status?.getAttribute("data-feedback-status") !== "saving";
+      return select?.value === "not-useful" && status?.getAttribute("data-feedback-status") !== "syncing";
     },
     { timeout: 10000 },
   );
@@ -259,9 +262,14 @@ if (status.configured) {
     stored: Object.keys(localStorage).some((key) => key.startsWith("proposal-checker:ai-feedback:v1:")),
   }));
   expect(feedbackState.value === "not-useful", "Not useful selection applied");
-  expect(feedbackState.status?.trim() === "Learned locally", `rating persisted locally (${feedbackState.status})`);
+  const expectedFeedbackStatus = sharedFeedbackConfigured ? "Shared memory" : "Learned locally";
+  expect(feedbackState.status?.trim() === expectedFeedbackStatus, `rating persisted (${feedbackState.status})`);
   expect(feedbackState.stored, "rating written to browser storage");
-  expect(feedbackRequests === 0, "rating sends no /api/feedback request");
+  expect(
+    feedbackWrites === (sharedFeedbackConfigured ? 1 : 0),
+    sharedFeedbackConfigured ? "rating writes through /api/feedback" : "local fallback skips /api/feedback write",
+  );
+  expect(feedbackPolicyRequests >= 1, "AI run checks the shared feedback policy route");
 
   await rating.evaluate((select) => select.closest("[data-finding]")?.click());
   await page.waitForSelector("[data-stage]", { timeout: 10000 });
@@ -287,7 +295,8 @@ if (status.configured) {
     },
     { timeout: 240000 },
   );
-  await page.waitForSelector("[data-local-learning]", { timeout: 10000 });
+  const learningSelector = sharedFeedbackConfigured ? "[data-shared-learning]" : "[data-local-learning]";
+  await page.waitForSelector(learningSelector, { timeout: 10000 });
   await wait(800);
 
   const learnedStats = await readStats();
@@ -297,32 +306,39 @@ if (status.configured) {
     statTotal(learnedStats) < statTotal(stats3),
     `local learning hides one or more findings: ${stats3.join("/")} -> ${learnedStats.join("/")}`,
   );
-  const learningNotice = await page.$eval("[data-local-learning]", (e) => e.innerText);
-  expect(/hid|hidden/i.test(learningNotice), `local-learning notice shown: "${learningNotice.replace(/\n/g, " ")}"`);
-  expect(feedbackRequests === 0, "learned re-run sends no /api/feedback request");
+  const learningNotice = await page.$eval(learningSelector, (e) => e.innerText);
+  expect(/hid|hidden/i.test(learningNotice), `learning notice shown: "${learningNotice.replace(/\n/g, " ")}"`);
+  expect(
+    feedbackWrites === (sharedFeedbackConfigured ? 1 : 0),
+    "learned re-run does not create another feedback write",
+  );
+  expect(feedbackPolicyRequests >= 2, "learned re-run checks permanent-memory policy again");
 
-  const aiRequestsBeforeReset = aiAnalysisRequests;
-  const resetLearning = await page.$eval("[data-local-learning] button", (button) => {
-    const isReset = button.textContent?.includes("Reset local learning");
-    if (isReset) button.click();
-    return isReset;
-  });
-  expect(resetLearning, "Reset local learning button found and clicked");
-  await page.waitForFunction(() => !document.querySelector("[data-local-learning]"), {
-    timeout: 10000,
-  });
-  await wait(400);
+  if (!sharedFeedbackConfigured) {
+    const aiRequestsBeforeReset = aiAnalysisRequests;
+    const resetLearning = await page.$eval("[data-local-learning] button", (button) => {
+      const isReset = button.textContent?.includes("Reset local learning");
+      if (isReset) button.click();
+      return isReset;
+    });
+    expect(resetLearning, "Reset local learning button found and clicked");
+    await page.waitForFunction(() => !document.querySelector("[data-local-learning]"), {
+      timeout: 10000,
+    });
+    await wait(400);
 
-  const resetState = await page.evaluate(() => ({
-    feedbackKeys: Object.keys(localStorage).filter((key) =>
-      key.startsWith("proposal-checker:ai-feedback:v1:"),
-    ),
-  }));
-  const restoredStats = await readStats();
-  expect(resetState.feedbackKeys.length === 0, "reset clears browser feedback records");
-  expect(restoredStats.join("/") === stats3.join("/"), `reset restores exact findings: ${restoredStats.join(" / ")}`);
-  expect(aiAnalysisRequests === aiRequestsBeforeReset, "reset restores results without another AI request");
-  expect(feedbackRequests === 0, "full feedback flow never calls /api/feedback");
+    const resetState = await page.evaluate(() => ({
+      feedbackKeys: Object.keys(localStorage).filter((key) =>
+        key.startsWith("proposal-checker:ai-feedback:v1:"),
+      ),
+    }));
+    const restoredStats = await readStats();
+    expect(resetState.feedbackKeys.length === 0, "reset clears browser feedback records");
+    expect(restoredStats.join("/") === stats3.join("/"), `reset restores exact findings: ${restoredStats.join(" / ")}`);
+    expect(aiAnalysisRequests === aiRequestsBeforeReset, "reset restores results without another AI request");
+  } else {
+    expect((await page.$$("[data-shared-learning] button")).length === 0, "shared memory is not erased by the local reset control");
+  }
 } else {
   console.log("\n9. AI deep check — skipped (no provider configured)");
 }

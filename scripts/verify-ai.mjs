@@ -39,6 +39,7 @@ const text = await post("/api/analyze-text", {
 });
 expect(text.status === 200, `HTTP ${text.status}${text.json.error ? ` — ${text.json.error}` : ""}`);
 expect(Array.isArray(text.json.findings), "returns a findings array");
+expect(typeof text.json.feedbackMemory?.applied === "number", "reports feedback examples sent to text prompt");
 expect(text.json.findings.length === 1, `junk entry dropped by coercer (${text.json.findings.length} kept)`);
 const t = text.json.findings[0];
 expect(
@@ -60,6 +61,7 @@ for (let i = 1; i <= 3; i++) {
   if (img.json.findings?.length) break;
 }
 expect(img.json.findings.length === 1, `found the in-image typo (${img.json.findings.length})`);
+expect(typeof img.json.feedbackMemory?.applied === "number", "reports feedback examples sent to image prompt");
 const f = img.json.findings[0];
 expect(f?.quote === "Submitt" && f?.suggestion === "Submit", `in-image quote/fix: ${JSON.stringify(f?.quote)} → ${JSON.stringify(f?.suggestion)}`);
 expect(f?.severity === "warn", `bogus severity "SEVERE" coerced to "${f?.severity}"`);

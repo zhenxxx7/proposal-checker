@@ -12,6 +12,7 @@ import { collectFamilies, googleFontsUrl } from "@/lib/fonts";
 import { runRuleChecks } from "@/lib/checks";
 import {
   applyFeedbackLearning,
+  applySharedFeedbackPolicy,
   clearStoredFeedbackLearning,
   createFeedbackDeckIdentity,
   createFeedbackRecord,
@@ -23,6 +24,7 @@ import {
   type FeedbackRating,
   type FeedbackSelections,
 } from "@/lib/feedback";
+import { resolveSharedFeedbackPolicy, storeSharedFeedbackRecord } from "@/lib/feedbackClient";
 import { groupFindings } from "@/lib/groups";
 import { parsePptx } from "@/lib/pptx";
 import { bySeverity, download, toMarkdown } from "@/lib/report";
@@ -37,15 +39,17 @@ interface Status {
   provider: string;
   label: string;
   model: string;
+  feedbackConfigured: boolean;
 }
 
-const NO_AI: Status = { configured: false, provider: "", label: "", model: "" };
+const NO_AI: Status = { configured: false, provider: "", label: "", model: "", feedbackConfigured: false };
 
 async function fetchAiStatus(): Promise<Status> {
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
     if (!response.ok) return NO_AI;
-    return await response.json() as Status;
+    const value = await response.json() as Partial<Status>;
+    return { ...NO_AI, ...value, feedbackConfigured: value.feedbackConfigured === true };
   } catch {
     return NO_AI;
   }
@@ -65,6 +69,7 @@ export default function Page() {
   const [abort, setAbort] = useState<AbortController | null>(null);
   const [feedback, setFeedback] = useState<FeedbackSelections>({});
   const [learnedSkipped, setLearnedSkipped] = useState(0);
+  const [learningMode, setLearningMode] = useState<"local" | "shared" | null>(null);
   const analysisRunning = useRef(false);
   const deckLoading = useRef(false);
   const rawAiFindings = useRef<Finding[]>([]);
@@ -127,7 +132,7 @@ export default function Page() {
     try {
       // Start remote text and vision work first. Local rules run while those
       // requests are already in flight.
-      const textPromise = analyzeText(targetDeck, controller.signal).then((result) => {
+      const textPromise = analyzeText(targetDeck, deckIdentity.fingerprint, controller.signal).then((result) => {
         textDone = 1;
         report("Analyzing deck...");
         return result;
@@ -140,6 +145,7 @@ export default function Page() {
         },
         2,
         controller.signal,
+        deckIdentity.fingerprint,
       );
       const localPromise = includeRules
         ? Promise.resolve().then(() => {
@@ -160,8 +166,24 @@ export default function Page() {
         ...(imageResult.status === "fulfilled" ? imageResult.value : []),
       ];
       rawAiFindings.current = combined;
-      const learned = applyFeedbackLearning(combined, learningRecords, deckIdentity);
+      // The policy lookup happens before the one combined result is revealed.
+      // If Neon has not been provisioned yet, browser-only learning remains the
+      // fallback and the existing one-wait experience remains intact.
+      const sharedPolicy = await resolveSharedFeedbackPolicy(deckIdentity, combined, controller.signal);
+      const learned = sharedPolicy.configured
+        ? applySharedFeedbackPolicy(combined, sharedPolicy.suppressedLearningKeys)
+        : applyFeedbackLearning(combined, learningRecords, deckIdentity);
       setLearnedSkipped(learned.skipped);
+      setLearningMode(learned.skipped ? (sharedPolicy.configured ? "shared" : "local") : null);
+      if (sharedPolicy.configured && Object.keys(sharedPolicy.selections).length) {
+        setFeedback((current) => {
+          const next = { ...current };
+          for (const [fingerprint, rating] of Object.entries(sharedPolicy.selections)) {
+            next[fingerprint] = { rating, delivery: "shared" };
+          }
+          return next;
+        });
+      }
       const initialRules = localResult.status === "fulfilled" ? localResult.value : null;
       setFindings((current) => [
         ...(initialRules ?? current.filter((finding) => finding.source === "rule")),
@@ -198,6 +220,7 @@ export default function Page() {
     setUrls(new Map());
     setAiDone(false);
     setLearnedSkipped(0);
+    setLearningMode(null);
     rawAiFindings.current = [];
     setActive(null);
     setQuery("");
@@ -296,16 +319,35 @@ export default function Page() {
     });
     const fingerprint = findingFingerprint(finding);
     const stored = storeFeedbackRecord(record);
+    if (!status?.feedbackConfigured) {
+      setFeedback((current) => ({
+        ...current,
+        [fingerprint]: { rating, delivery: stored ? "local" : "error" },
+      }));
+      return;
+    }
     setFeedback((current) => ({
       ...current,
-      [fingerprint]: { rating, delivery: stored ? "local" : "error" },
+      [fingerprint]: { rating, delivery: stored ? "syncing" : "error" },
     }));
+    void storeSharedFeedbackRecord(record).then((shared) => {
+      setFeedback((current) => {
+        const currentSelection = current[fingerprint];
+        // A newer choice won while the older network request was in flight.
+        if (!currentSelection || currentSelection.rating !== rating) return current;
+        return {
+          ...current,
+          [fingerprint]: { rating, delivery: shared ? "shared" : stored ? "local" : "error" },
+        };
+      });
+    });
   }, [deck, fileName, status]);
 
   const resetLocalLearning = useCallback(() => {
     clearStoredFeedbackLearning();
     setFeedback({});
     setLearnedSkipped(0);
+    setLearningMode(null);
     setFindings((currentFindings) => [
       ...currentFindings.filter((finding) => finding.source === "rule"),
       ...rawAiFindings.current,
@@ -402,16 +444,18 @@ export default function Page() {
 
         {deck && learnedSkipped > 0 && (
           <Card
-            data-local-learning
+            {...(learningMode === "local" ? { "data-local-learning": true } : { "data-shared-learning": true })}
             role="status"
             className="flex items-center gap-3 border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-950 dark:border-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-100"
           >
             <span className="min-w-0 flex-1">
-              Local AI feedback hid {learnedSkipped} repeated finding{learnedSkipped === 1 ? "" : "s"}.
+              {learningMode === "shared" ? "Shared" : "Local"} AI feedback hid {learnedSkipped} repeated finding{learnedSkipped === 1 ? "" : "s"}.
             </span>
-            <Button onClick={resetLocalLearning} title="Forget all AI usefulness choices saved in this browser">
-              Reset local learning
-            </Button>
+            {learningMode === "local" && (
+              <Button onClick={resetLocalLearning} title="Forget all AI usefulness choices saved in this browser">
+                Reset local learning
+              </Button>
+            )}
           </Card>
         )}
 

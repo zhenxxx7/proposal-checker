@@ -47,14 +47,18 @@ const normQuote = (s: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-export async function analyzeText(deck: Deck, signal?: AbortSignal): Promise<Finding[]> {
+export async function analyzeText(
+  deck: Deck,
+  deckFingerprint?: string,
+  signal?: AbortSignal,
+): Promise<Finding[]> {
   const slides = slideTexts(deck);
   if (!slides.length) return [];
   const res = await fetch("/api/analyze-text", {
     method: "POST",
     headers: { "content-type": "application/json" },
     signal,
-    body: JSON.stringify({ slides }),
+    body: JSON.stringify({ slides, ...(deckFingerprint ? { deckFingerprint } : {}) }),
   });
   const json = (await res.json()) as { findings?: AiFinding[]; error?: string };
   if (json.error) throw new Error(json.error);
@@ -115,6 +119,7 @@ export async function analyzeImages(
   // Free tiers cap requests per minute. Two in flight keeps the retry budget intact.
   concurrency = 2,
   signal?: AbortSignal,
+  deckFingerprint?: string,
 ): Promise<Finding[]> {
   const out: Finding[] = [];
   let done = 0;
@@ -135,6 +140,7 @@ export async function analyzeImages(
             image: base64,
             mediaType,
             displayPx: { w: Math.round(px96(job.pic.rect.w)), h: Math.round(px96(job.pic.rect.h)) },
+            ...(deckFingerprint ? { deckFingerprint } : {}),
           }),
         });
         const json = (await res.json()) as { findings?: AiFinding[] };

@@ -148,10 +148,24 @@ cp .env.example .env.local
 # AI_API_KEY=...            # https://aistudio.google.com/apikey
 ```
 
-Local feedback learning needs no database, queue, cron job, or additional
-backend. It is deterministic application-level learning rather than model-weight
-training, so it stays on that browser and is removed when browser storage is
-cleared. Ratings never leave the browser and do not call a feedback API.
+Without a database, feedback learning is deterministic application-level
+learning: it stays in that browser, is removed when browser storage is cleared,
+and never changes Gemini model weights. When `DATABASE_URL` is supplied by a
+Vercel-managed Neon project, each explicit **Useful / Not useful** choice is
+also saved as shared memory. On the next run it is used twice: server retrieves
+a short set of matching reviewer-rated patterns and adds them to Gemini's system
+instruction, then app applies same policy before results show. Same-deck choices
+apply on next run; cross-deck prompt guidance needs two decks and 80% agreement.
+App still falls back to browser-local learning if Neon is unavailable.
+
+Shared memory stores the rated AI finding (quote, suggested correction, and
+metadata), its content fingerprint, and model name. It does **not** store the
+uploaded `.pptx`, slide preview images, or raw image data. Gemini receives only
+small retrieved calibration examples relevant to current text/image pass, never
+whole feedback database. This is retrieval-augmented, RLHF-like feedback
+learning, not continuous RLHF or Gemini weight training.
+Use it only in the private development workspace for now; add sign-in and rate
+limiting before enabling shared feedback on a public deployment.
 
 **If the deck is confidential, skip the AI pass.** The rule checks run entirely
 in the browser and upload nothing; only the AI pass sends data out, and Gemini's
@@ -220,8 +234,11 @@ supported providers are hosted, so nothing depends on a machine-local endpoint.
 Local `.pptx` files are never uploaded. For a Google Slides link, one serverless
 request downloads and parses the raw export in memory; no file, database record,
 or durable server state is created. The browser receives only structured slide
-data and referenced, size-reduced preview assets. AI feedback and learned
-suppression stay in browser `localStorage`; no feedback database is required.
+data and referenced, size-reduced preview assets. With no `DATABASE_URL`, AI
+feedback and learned suppression stay in browser `localStorage`. With Neon,
+only rated finding metadata becomes durable shared memory; a bounded matching
+subset is added server-side to next Gemini prompt. Deck files and image previews
+remain ephemeral.
 The AI pass sends only:
 
 - the extracted slide text, in one request;
