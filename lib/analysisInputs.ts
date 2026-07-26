@@ -209,3 +209,25 @@ export async function getAnalysisInput(id: string): Promise<AnalysisInputRow | n
   const rows = (await getSql().query(`SELECT * FROM ${TABLE} WHERE id = $1`, [id])) as AnalysisInputRow[];
   return rows[0] ?? null;
 }
+
+export async function getAnalysisInputs(ids: readonly string[]): Promise<Map<string, AnalysisInputRow>> {
+  if (!ids.length) return new Map();
+  await ensureSchema();
+  const rows = (await getSql().query(`SELECT * FROM ${TABLE} WHERE id = ANY($1::text[])`, [
+    [...ids],
+  ])) as AnalysisInputRow[];
+  return new Map(rows.map((row) => [row.id, row]));
+}
+
+/** Fallback join for feedback rows recorded before input linking existed. */
+export async function latestInputFor(
+  deckFingerprint: string,
+  source: AnalysisInputSource,
+): Promise<AnalysisInputRow | null> {
+  await ensureSchema();
+  const rows = (await getSql().query(
+    `SELECT * FROM ${TABLE} WHERE deck_fingerprint = $1 AND source = $2 ORDER BY created_at DESC LIMIT 1`,
+    [deckFingerprint, source],
+  )) as AnalysisInputRow[];
+  return rows[0] ?? null;
+}

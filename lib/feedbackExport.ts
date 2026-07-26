@@ -34,7 +34,7 @@ export function exportEligible(row: AdminFeedbackRow, format: ExportFormat): boo
   return row.rating === "useful" || Boolean(effectiveCorrection(row));
 }
 
-interface WireFinding {
+export interface WireFinding {
   slide: number;
   severity: string;
   category: string;
@@ -44,7 +44,7 @@ interface WireFinding {
 }
 
 /** Project the stored finding back onto the model's production output shape. */
-function wireFinding(row: AdminFeedbackRow): WireFinding {
+export function wireFinding(row: AdminFeedbackRow): WireFinding {
   const finding = (row.finding ?? {}) as Record<string, unknown>;
   return {
     slide: typeof finding.slide === "number" ? finding.slide : 1,
@@ -56,7 +56,7 @@ function wireFinding(row: AdminFeedbackRow): WireFinding {
   };
 }
 
-function correctedFinding(row: AdminFeedbackRow): WireFinding {
+export function correctedFinding(row: AdminFeedbackRow): WireFinding {
   const original = wireFinding(row);
   const correction = effectiveCorrection(row);
   return correction ? { ...original, suggestion: correction } : original;

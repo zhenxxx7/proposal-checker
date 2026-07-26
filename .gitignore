@@ -44,5 +44,8 @@ next-env.d.ts
 scripts/__*.png
 scripts/__*.pptx
 
+# training datasets (contain client slide text)
+/training-data/
+
 # codex remote attachments
 .codex-remote-attachments/

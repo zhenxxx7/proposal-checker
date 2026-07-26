@@ -197,6 +197,22 @@ has a stored baseline to beat. The model registry keeps one active model per
 task (text/image); task-scoped env vars always override it, and
 `MODEL_REGISTRY_ENABLED=false` bypasses it entirely.
 
+### Managed fine-tuning (no self-hosted models)
+
+Once enough approved, corrected feedback exists (aim for 300–500 reviewed
+examples), `npm run dataset` joins it to the captured inputs and writes
+deck-disjoint `training-data/` JSONL: SFT chat examples, DPO preference pairs
+(corrected answer beats the AI's original), and a benchmark from the held-out
+split. `npm run train` uploads the files and drives a managed fine-tuning job
+at the provider selected by `TRAINING_PROVIDER` — training runs on the
+provider's infrastructure and the result is a hosted model id, no GPU or VPS
+anywhere. `status` records the finished model as a registry *candidate*;
+evaluate it with `npm run eval -- --save <row-id>`, and `promote` refuses to
+activate it unless it beats the stored baseline (composite, F1 +2 points,
+JSON validity ≥ 98%, no grounding or clean-deck regression — `--force`
+overrides). `rollback --task text` is one command, and the image pass keeps
+serving from Gemini throughout.
+
 ### Admin review queue
 
 Set `ADMIN_TOKEN` (32+ random bytes) and open `/admin`: every rating arrives

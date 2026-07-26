@@ -16,6 +16,8 @@
     "verify:feedback": "tsx scripts/verify-feedback-fixes.ts",
     "verify:eval": "tsx scripts/verify-eval.ts",
     "eval": "tsx scripts/eval.ts",
+    "dataset": "tsx scripts/build-dataset.ts",
+    "train": "tsx scripts/train.ts",
     "retention": "tsx scripts/retention.ts",
     "fixture:deck": "node scripts/make-fixture-deck.mjs",
     "mock:ai": "node scripts/mock-ai.mjs"
