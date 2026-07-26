@@ -120,7 +120,7 @@ export async function countByStatus(): Promise<Record<ReviewStatus, number>> {
   return counts;
 }
 
-/** Returns false when the id does not exist — the route maps that to a 404. */
+/** `found` is false when the id does not exist — the route maps that to 404. */
 export async function reviewFeedback({
   id,
   decision,
@@ -133,7 +133,7 @@ export async function reviewFeedback({
   note?: string;
   correction?: string;
   reviewer?: string;
-}): Promise<boolean> {
+}): Promise<{ found: boolean; analysisInputId: string | null }> {
   await ensureFeedbackSchema();
   const rows = (await getSql().query(
     `
@@ -144,11 +144,11 @@ export async function reviewFeedback({
         reviewed_by = CASE WHEN $2 = 'pending' THEN NULL ELSE $5 END,
         reviewed_at = CASE WHEN $2 = 'pending' THEN NULL ELSE NOW() END
       WHERE id = $1
-      RETURNING id
+      RETURNING id, analysis_input_id
     `,
     [id, decision, note?.trim() ?? "", correction?.trim() ?? "", reviewer],
-  )) as { id: string }[];
-  return rows.length > 0;
+  )) as { id: string; analysis_input_id: string | null }[];
+  return { found: rows.length > 0, analysisInputId: rows[0]?.analysis_input_id ?? null };
 }
 
 export interface ReviewGroup {

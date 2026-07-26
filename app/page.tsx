@@ -81,6 +81,8 @@ export default function Page() {
     text: null,
     image: null,
   });
+  // Captured analysis-input id per finding id (image findings map per image).
+  const inputIdsRef = useRef<Record<string, string>>({});
 
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
@@ -177,6 +179,10 @@ export default function Page() {
       provenanceRef.current = {
         text: textResult.status === "fulfilled" ? textResult.value.provenance : null,
         image: imageResult.status === "fulfilled" ? imageResult.value.provenance : null,
+      };
+      inputIdsRef.current = {
+        ...(textResult.status === "fulfilled" ? textResult.value.inputIds : {}),
+        ...(imageResult.status === "fulfilled" ? imageResult.value.inputIds : {}),
       };
       // The policy lookup happens before the one combined result is revealed.
       // If Neon has not been provisioned yet, browser-only learning remains the
@@ -342,7 +348,7 @@ export default function Page() {
       provider: provenance?.provider ?? status?.provider,
       model: provenance?.model ?? status?.model,
       promptVersion: provenance?.promptVersion,
-      analysisInputId: provenance?.analysisInputId,
+      analysisInputId: inputIdsRef.current[finding.id] ?? provenance?.analysisInputId,
       correction: details?.correction,
       reason: details?.reason,
     });

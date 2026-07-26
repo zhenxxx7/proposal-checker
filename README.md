@@ -175,6 +175,28 @@ require a signed anonymous cookie minted by `/api/status`. For rate limiting
 on a public deployment, add a Vercel WAF rule on `/api/feedback*` and the
 analyze routes — the app deliberately keeps no per-IP counters of its own.
 
+### Training data capture and evaluation
+
+By default nothing durable stores deck content — that is a privacy feature,
+but it also means feedback rows hold only the AI's *output*. Setting
+`TRAINING_CAPTURE=true` changes the posture deliberately: each analysis then
+stores its sanitized model input (the slide text block; for images a content
+hash and context line, never pixels) so approved feedback can be reconstructed
+into SFT/DPO training pairs. Captured inputs expire after
+`TRAINING_CAPTURE_TTL_DAYS` (default 90) unless an admin approval pins them;
+`npm run retention` purges expired rows and `--purge-deck deck-v1-<hex>`
+deletes everything one client's deck produced.
+
+`npm run eval` scores any model against the benchmark fixtures
+(`scripts/fixtures/eval-cases.jsonl`) with the production prompt and no
+feedback memory: strict JSON validity, quote grounding, precision/recall,
+clean-deck accuracy, and a weighted composite that doubles as the future
+reinforcement-training grader. Run it against the incumbent Gemini config
+first (`npm run eval -- --save baseline`) so every later fine-tuned candidate
+has a stored baseline to beat. The model registry keeps one active model per
+task (text/image); task-scoped env vars always override it, and
+`MODEL_REGISTRY_ENABLED=false` bypasses it entirely.
+
 ### Admin review queue
 
 Set `ADMIN_TOKEN` (32+ random bytes) and open `/admin`: every rating arrives

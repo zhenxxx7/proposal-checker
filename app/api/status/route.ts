@@ -1,5 +1,6 @@
 import { aiConfig, type AiTask } from "@/lib/ai/config";
 import { promptVersionFor } from "@/lib/ai/prompts";
+import { resolveAiConfig } from "@/lib/ai/registry";
 import { sharedFeedbackConfigured } from "@/lib/feedbackServer";
 import { mintFeedbackTokenCookie } from "@/lib/requestGuards";
 
@@ -17,10 +18,10 @@ export async function GET(request: Request) {
     label,
     model,
     // Per-task resolution: the text and image passes can serve from different
-    // models once task-scoped env vars (or later the model registry) diverge.
+    // models via task-scoped env vars or the model registry.
     tasks: {
-      text: taskStatus("text"),
-      image: taskStatus("image"),
+      text: await taskStatus("text"),
+      image: await taskStatus("image"),
     },
     promptVersions: {
       text: promptVersionFor("ai-text"),
@@ -30,7 +31,7 @@ export async function GET(request: Request) {
   }, { headers });
 }
 
-function taskStatus(task: AiTask) {
-  const { configured, provider, label, model } = aiConfig(task);
-  return { configured, provider, label, model };
+async function taskStatus(task: AiTask) {
+  const { configured, provider, label, model, origin } = await resolveAiConfig(task);
+  return { configured, provider, label, model, origin };
 }

@@ -65,6 +65,8 @@ function toProvenance(json: AnalyzeResponse): AnalysisProvenance {
 export interface TextAnalysis {
   findings: Finding[];
   provenance: AnalysisProvenance | null;
+  /** Captured-input id per finding id — image findings map to their own image's input. */
+  inputIds: Record<string, string>;
 }
 
 export async function analyzeText(
@@ -73,7 +75,7 @@ export async function analyzeText(
   signal?: AbortSignal,
 ): Promise<TextAnalysis> {
   const slides = slideTexts(deck);
-  if (!slides.length) return { findings: [], provenance: null };
+  if (!slides.length) return { findings: [], provenance: null, inputIds: {} };
   const res = await fetch("/api/analyze-text", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -93,7 +95,10 @@ export async function analyzeText(
       return (textByN.get(f.slide) ?? "").includes(normQuote(f.quote));
     })
     .map((f) => toFinding(f, "ai-text"));
-  return { findings, provenance: toProvenance(json) };
+  const inputIds: Record<string, string> = {};
+  const inputId = json.analysisInput?.id;
+  if (inputId) for (const finding of findings) inputIds[finding.id] = inputId;
+  return { findings, provenance: toProvenance(json), inputIds };
 }
 
 export interface ImageJob {
@@ -137,6 +142,8 @@ export function selectImageJobs(deck: Deck, minAreaPct = 2): ImageJob[] {
 export interface ImageAnalysis {
   findings: Finding[];
   provenance: AnalysisProvenance | null;
+  /** Captured-input id per finding id — each image response has its own input. */
+  inputIds: Record<string, string>;
 }
 
 export async function analyzeImages(
@@ -148,6 +155,7 @@ export async function analyzeImages(
   deckFingerprint?: string,
 ): Promise<ImageAnalysis> {
   const out: Finding[] = [];
+  const inputIds: Record<string, string> = {};
   let provenance: AnalysisProvenance | null = null;
   let done = 0;
   let cursor = 0;
@@ -175,7 +183,11 @@ export async function analyzeImages(
         provenance = toProvenance(json);
         // A typo inside a reused image exists on every slide that shows it.
         for (const f of json.findings ?? [])
-          for (const use of job.uses) out.push(toFinding({ ...f, slide: use.slide }, "ai-image", [use.shapeId]));
+          for (const use of job.uses) {
+            const finding = toFinding({ ...f, slide: use.slide }, "ai-image", [use.shapeId]);
+            if (json.analysisInput?.id) inputIds[finding.id] = json.analysisInput.id;
+            out.push(finding);
+          }
       } catch {
         // One bad image must not abort the run.
       }
@@ -184,7 +196,7 @@ export async function analyzeImages(
   };
 
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
-  return { findings: out, provenance };
+  return { findings: out, provenance, inputIds };
 }
 
 export function imageCropRect(width: number, height: number, crop: PicShape["crop"]) {

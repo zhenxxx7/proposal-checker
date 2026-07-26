@@ -1,6 +1,7 @@
 import { adminConfigured } from "@/lib/adminAuth";
 import { verifySession } from "@/lib/adminSession";
 import { adminQueueConfigured, reviewFeedback, type ReviewDecision } from "@/lib/adminServer";
+import { pinAnalysisInput } from "@/lib/analysisInputs";
 import { isTrustedOrigin } from "@/lib/requestGuards";
 
 export const dynamic = "force-dynamic";
@@ -33,8 +34,14 @@ export async function POST(request: Request) {
   }
 
   try {
-    const found = await reviewFeedback({ id, decision, note, correction });
+    const { found, analysisInputId } = await reviewFeedback({ id, decision, note, correction });
     if (!found) return Response.json({ error: "Unknown feedback id" }, { status: 404 });
+    // Approved training evidence must outlive the capture TTL.
+    if (decision === "approved" && analysisInputId) {
+      await pinAnalysisInput(analysisInputId).catch((error) =>
+        console.error("Pinning analysis input failed", error),
+      );
+    }
     return redirect(request, `/admin${back ? `?${back}` : ""}`);
   } catch (error) {
     console.error("Feedback review failed", error);

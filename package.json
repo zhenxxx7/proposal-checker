@@ -14,6 +14,9 @@
     "verify:ai": "node scripts/verify-ai.mjs",
     "verify:admin": "node scripts/verify-admin.mjs",
     "verify:feedback": "tsx scripts/verify-feedback-fixes.ts",
+    "verify:eval": "tsx scripts/verify-eval.ts",
+    "eval": "tsx scripts/eval.ts",
+    "retention": "tsx scripts/retention.ts",
     "fixture:deck": "node scripts/make-fixture-deck.mjs",
     "mock:ai": "node scripts/mock-ai.mjs"
   },

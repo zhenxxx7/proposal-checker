@@ -1,6 +1,7 @@
 import { askForFindings } from "@/lib/ai/client";
-import { aiConfig } from "@/lib/ai/config";
 import { promptVersionFor, TEXT_SYSTEM_PROMPT } from "@/lib/ai/prompts";
+import { resolveAiConfig } from "@/lib/ai/registry";
+import { captureAnalysisInput } from "@/lib/analysisInputs";
 import { resolveSharedFeedbackPromptMemory } from "@/lib/feedbackServer";
 import { boundedJsonError, isTrustedOrigin, readBoundedJson } from "@/lib/requestGuards";
 
@@ -25,20 +26,36 @@ export async function POST(req: Request) {
   if (!Array.isArray(slides) || !slides.length) return Response.json({ findings: [] });
 
   const deck = slides.map((s) => `--- SLIDE ${s.n} ---\n${s.texts.join("\n")}`).join("\n\n");
-  const feedbackMemory = await promptMemory("ai-text", deckFingerprint(requestedDeckFingerprint));
+  const fingerprint = deckFingerprint(requestedDeckFingerprint);
+  const feedbackMemory = await promptMemory("ai-text", fingerprint);
 
   try {
     const result = await askForFindings(
       `${TEXT_SYSTEM_PROMPT}${feedbackMemory.prompt}`,
       [{ type: "text", text: `Proofread this deck. ${slides.length} slides.\n\n${deck}` }],
-      aiConfig("text"),
+      await resolveAiConfig("text"),
     );
+    // Off unless TRAINING_CAPTURE=true; without a deck fingerprint the input
+    // could never be joined back to feedback, so it is not stored either.
+    const analysisInput = fingerprint
+      ? await captureAnalysisInput({
+          deckFingerprint: fingerprint,
+          source: "ai-text",
+          promptVersion: promptVersionFor("ai-text"),
+          payload: { slides },
+          feedbackMemory: feedbackMemory.examples.length ? feedbackMemory.examples : null,
+          provider: result.provider,
+          model: result.model,
+          responseFindings: result.findings,
+          responseFormatMode: result.responseFormatMode,
+        })
+      : null;
     return Response.json({
       findings: result.findings,
       // Actual serving provenance — the browser stamps it into feedback records.
       model: { provider: result.provider, name: result.model },
       promptVersion: promptVersionFor("ai-text"),
-      analysisInput: null,
+      analysisInput,
       feedbackMemory: feedbackMeta(feedbackMemory),
     });
   } catch (err) {

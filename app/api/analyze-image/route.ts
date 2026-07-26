@@ -1,6 +1,7 @@
 import { askForFindings } from "@/lib/ai/client";
-import { aiConfig } from "@/lib/ai/config";
 import { IMAGE_SYSTEM_PROMPT, promptVersionFor } from "@/lib/ai/prompts";
+import { resolveAiConfig } from "@/lib/ai/registry";
+import { captureAnalysisInput, sha256Hex } from "@/lib/analysisInputs";
 import { resolveSharedFeedbackPromptMemory } from "@/lib/feedbackServer";
 import { boundedJsonError, isTrustedOrigin, readBoundedJson } from "@/lib/requestGuards";
 
@@ -38,7 +39,8 @@ export async function POST(req: Request) {
   ]
     .filter(Boolean)
     .join("\n\n");
-  const feedbackMemory = await promptMemory("ai-image", deckFingerprint(requestedDeckFingerprint));
+  const fingerprint = deckFingerprint(requestedDeckFingerprint);
+  const feedbackMemory = await promptMemory("ai-image", fingerprint);
 
   try {
     const result = await askForFindings(
@@ -47,15 +49,38 @@ export async function POST(req: Request) {
         { type: "image_url", image_url: { url: `data:${mediaType};base64,${image}` } },
         { type: "text", text: context },
       ],
-      aiConfig("image"),
+      await resolveAiConfig("image"),
     );
     // The model is told the slide number but often echoes 1; force it.
+    const findings = result.findings.map((f) => ({ ...f, slide, category: "image-text" as const }));
+    // Metadata only — image bytes are the highest privacy cost and v1
+    // training is text-only, so the hash keeps the input re-identifiable
+    // without storing pixels.
+    const analysisInput = fingerprint
+      ? await captureAnalysisInput({
+          deckFingerprint: fingerprint,
+          source: "ai-image",
+          promptVersion: promptVersionFor("ai-image"),
+          payload: {
+            slide,
+            imageSha256: sha256Hex(Buffer.from(image, "base64")),
+            mediaType,
+            displayPx: displayPx ?? null,
+            contextText: context,
+          },
+          feedbackMemory: feedbackMemory.examples.length ? feedbackMemory.examples : null,
+          provider: result.provider,
+          model: result.model,
+          responseFindings: findings,
+          responseFormatMode: result.responseFormatMode,
+        })
+      : null;
     return Response.json({
-      findings: result.findings.map((f) => ({ ...f, slide, category: "image-text" as const })),
+      findings,
       // Actual serving provenance — the browser stamps it into feedback records.
       model: { provider: result.provider, name: result.model },
       promptVersion: promptVersionFor("ai-image"),
-      analysisInput: null,
+      analysisInput,
       feedbackMemory: feedbackMeta(feedbackMemory),
     });
   } catch (err) {
