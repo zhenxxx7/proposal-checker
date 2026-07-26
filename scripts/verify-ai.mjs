@@ -48,6 +48,11 @@ expect(
   `parsed through markdown code fences: ${JSON.stringify(t?.quote)} -> ${JSON.stringify(t?.suggestion)}`,
 );
 expect(t?.slide === 3, `slide number preserved (${t?.slide})`);
+expect(
+  typeof text.json.promptVersion === "string" && text.json.promptVersion.startsWith("ptext-"),
+  `text response carries its prompt version (${text.json.promptVersion})`,
+);
+expect(text.json.model?.name === status.model, `text response reports the serving model (${text.json.model?.name})`);
 
 console.log("\n3. /api/analyze-image  (first call is rate-limited by the mock)");
 let img;
@@ -68,6 +73,11 @@ expect(f?.quote === "Submitt" && f?.suggestion === "Submit", `in-image quote/fix
 expect(f?.severity === "warn", `bogus severity "SEVERE" coerced to "${f?.severity}"`);
 expect(f?.slide === 7, `slide forced to the caller's value (${f?.slide})`);
 expect(f?.category === "image-text", `category forced to image-text`);
+expect(
+  typeof img.json.promptVersion === "string" && img.json.promptVersion.startsWith("pimg-"),
+  `image response carries its prompt version (${img.json.promptVersion})`,
+);
+expect(!!img.json.model?.name, `image response reports the serving model (${img.json.model?.name})`);
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}\n`);
 process.exit(failures === 0 ? 0 : 1);

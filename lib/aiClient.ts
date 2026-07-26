@@ -1,6 +1,7 @@
 "use client";
 
 import type { AiFinding } from "./ai/schema";
+import { normQuote } from "./textNorm";
 import { px96, type Deck, type Finding, type PicShape } from "./types";
 import { isVisibleOnSlide } from "./visibility";
 
@@ -36,43 +37,63 @@ export function slideTexts(deck: Deck) {
     .filter((s) => s.texts.length > 0);
 }
 
-/** Normalise smart quotes, dashes, and whitespace so a verbatim match survives
- *  the model retyping “ vs " or collapsing spaces. Case is preserved — a
- *  capitalisation finding must still match the exact casing on the slide. */
-const normQuote = (s: string) =>
-  s
-    .replace(/[‘’‛]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[–—]/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
+/** Which model/prompt actually produced a run's findings — feedback provenance. */
+export interface AnalysisProvenance {
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  analysisInputId?: string;
+}
+
+interface AnalyzeResponse {
+  findings?: AiFinding[];
+  error?: string;
+  model?: { provider?: string; name?: string };
+  promptVersion?: string;
+  analysisInput?: { id?: string } | null;
+}
+
+function toProvenance(json: AnalyzeResponse): AnalysisProvenance {
+  return {
+    provider: json.model?.provider,
+    model: json.model?.name,
+    promptVersion: json.promptVersion,
+    analysisInputId: json.analysisInput?.id,
+  };
+}
+
+export interface TextAnalysis {
+  findings: Finding[];
+  provenance: AnalysisProvenance | null;
+}
 
 export async function analyzeText(
   deck: Deck,
   deckFingerprint?: string,
   signal?: AbortSignal,
-): Promise<Finding[]> {
+): Promise<TextAnalysis> {
   const slides = slideTexts(deck);
-  if (!slides.length) return [];
+  if (!slides.length) return { findings: [], provenance: null };
   const res = await fetch("/api/analyze-text", {
     method: "POST",
     headers: { "content-type": "application/json" },
     signal,
     body: JSON.stringify({ slides, ...(deckFingerprint ? { deckFingerprint } : {}) }),
   });
-  const json = (await res.json()) as { findings?: AiFinding[]; error?: string };
+  const json = (await res.json()) as AnalyzeResponse;
   if (json.error) throw new Error(json.error);
 
   // Ground every finding in the real slide text: the model is told to quote
   // verbatim, so a quote that is not actually on its slide is a hallucination.
   // Drop it. Quote-less findings (deck-wide consistency) are kept as-is.
   const textByN = new Map(slides.map((s) => [s.n, normQuote(s.texts.join("\n"))]));
-  return (json.findings ?? [])
+  const findings = (json.findings ?? [])
     .filter((f) => {
       if (!f.quote?.trim()) return true;
       return (textByN.get(f.slide) ?? "").includes(normQuote(f.quote));
     })
     .map((f) => toFinding(f, "ai-text"));
+  return { findings, provenance: toProvenance(json) };
 }
 
 export interface ImageJob {
@@ -113,6 +134,11 @@ export function selectImageJobs(deck: Deck, minAreaPct = 2): ImageJob[] {
   return [...byKey.values()];
 }
 
+export interface ImageAnalysis {
+  findings: Finding[];
+  provenance: AnalysisProvenance | null;
+}
+
 export async function analyzeImages(
   jobs: ImageJob[],
   onProgress: (done: number, total: number) => void,
@@ -120,8 +146,9 @@ export async function analyzeImages(
   concurrency = 2,
   signal?: AbortSignal,
   deckFingerprint?: string,
-): Promise<Finding[]> {
+): Promise<ImageAnalysis> {
   const out: Finding[] = [];
+  let provenance: AnalysisProvenance | null = null;
   let done = 0;
   let cursor = 0;
 
@@ -143,7 +170,9 @@ export async function analyzeImages(
             ...(deckFingerprint ? { deckFingerprint } : {}),
           }),
         });
-        const json = (await res.json()) as { findings?: AiFinding[] };
+        const json = (await res.json()) as AnalyzeResponse;
+        // All image calls serve from one model per run; keep the last seen.
+        provenance = toProvenance(json);
         // A typo inside a reused image exists on every slide that shows it.
         for (const f of json.findings ?? [])
           for (const use of job.uses) out.push(toFinding({ ...f, slide: use.slide }, "ai-image", [use.shapeId]));
@@ -155,7 +184,7 @@ export async function analyzeImages(
   };
 
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
-  return out;
+  return { findings: out, provenance };
 }
 
 export function imageCropRect(width: number, height: number, crop: PicShape["crop"]) {

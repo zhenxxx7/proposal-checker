@@ -18,9 +18,16 @@ export function FindingCard({
   showSlide?: boolean;
   onClick: () => void;
   feedback?: FeedbackSelection;
-  onFeedback?: (finding: Finding, rating: FeedbackRating) => void;
+  onFeedback?: (
+    finding: Finding,
+    rating: FeedbackRating,
+    details?: { correction?: string; reason?: string },
+  ) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [correction, setCorrection] = useState("");
+  const [reason, setReason] = useState("");
   const tone = TONE[f.severity];
 
   const copy = async (e: React.MouseEvent) => {
@@ -126,6 +133,59 @@ export function FindingCard({
                         : "Learned locally"}
                 </span>
               )}
+              {feedback && (
+                <button
+                  type="button"
+                  data-feedback-details-toggle
+                  onClick={() => setDetailsOpen((open) => !open)}
+                  className="rounded-md border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+                >
+                  {detailsOpen ? "Hide details" : "Add details"}
+                </button>
+              )}
+            </div>
+          )}
+
+          {isAiFinding(f) && onFeedback && feedback && detailsOpen && (
+            <div
+              className="mt-2 flex flex-col gap-1.5"
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              <textarea
+                data-feedback-correction
+                value={correction}
+                onChange={(event) => setCorrection(event.target.value)}
+                placeholder="What should it have said? A correction makes this rating trainable."
+                rows={2}
+                maxLength={4000}
+                className="w-full resize-y rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] text-zinc-700 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:focus:border-indigo-500 dark:focus:ring-indigo-950"
+              />
+              <textarea
+                data-feedback-reason
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="Why? (optional)"
+                rows={1}
+                maxLength={2000}
+                className="w-full resize-y rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] text-zinc-700 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:focus:border-indigo-500 dark:focus:ring-indigo-950"
+              />
+              <div>
+                <button
+                  type="button"
+                  data-feedback-details-save
+                  disabled={!correction.trim() && !reason.trim()}
+                  onClick={() =>
+                    onFeedback(f, feedback.rating, {
+                      correction: correction.trim() || undefined,
+                      reason: reason.trim() || undefined,
+                    })
+                  }
+                  className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 transition enabled:hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-300"
+                >
+                  Save details
+                </button>
+              </div>
             </div>
           )}
         </div>

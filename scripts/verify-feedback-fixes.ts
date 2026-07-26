@@ -5,13 +5,17 @@ import { imageCropRect } from "../lib/aiClient";
 import { runRuleChecks } from "../lib/checks";
 import { resolveFillElement, themeFillElement } from "../lib/color";
 import { parsePptx } from "../lib/pptx";
+import { aiConfigFromEnv } from "../lib/ai/config";
+import { isArchivedPromptVersion, PROMPT_ARCHIVE, promptVersionFor } from "../lib/ai/prompts";
 import {
   applyFeedbackLearning,
   applySharedFeedbackPolicy,
   createFeedbackDeckIdentity,
   createFeedbackPolicyRequest,
+  createFeedbackRecord,
   feedbackLearningKey,
   findingFingerprint,
+  isFeedbackRecord,
   type FeedbackRecord,
 } from "../lib/feedback";
 import {
@@ -234,6 +238,7 @@ assert.deepEqual(themeFill?.fill, { type: "solid", color: "#00ff00" });
 verifyLocalFeedbackLearning();
 verifyReceivedAtOrdering();
 verifyRequestGuards();
+verifyRecordFieldsAndPromptVersions();
 console.log("PASS feedback regressions: rules, preview fills, structured ratings, local and shared learning.");
 
 function xml(value: string) {
@@ -563,6 +568,68 @@ function verifyReceivedAtOrdering() {
     crossMemory.examples[0]?.suggestion,
     "newer suggestion",
     "cross-deck representative must be the newest Date-typed row",
+  );
+}
+
+function verifyRecordFieldsAndPromptVersions() {
+  assert.equal(promptVersionFor("ai-text"), promptVersionFor("ai-text"), "prompt version is deterministic");
+  assert.match(promptVersionFor("ai-text"), /^ptext-[a-f0-9]{12}$/, "text prompt version is a content hash");
+  assert.match(promptVersionFor("ai-image"), /^pimg-[a-f0-9]{12}$/, "image prompt version is a content hash");
+  assert.notEqual(promptVersionFor("ai-text"), promptVersionFor("ai-image"), "each pass has its own version");
+  assert.ok(isArchivedPromptVersion(promptVersionFor("ai-text")), "the current text prompt is archived");
+  assert.ok(!isArchivedPromptVersion("ptext-000000000000"), "unknown versions are not archived");
+  assert.ok(
+    PROMPT_ARCHIVE[promptVersionFor("ai-image")]?.includes("image-text"),
+    "the archive maps a version back to its prompt text",
+  );
+
+  const env = {
+    AI_PROVIDER: "gemini",
+    AI_API_KEY: "base-key",
+    AI_TEXT_PROVIDER: "custom",
+    AI_TEXT_BASE_URL: "https://example.test/v1",
+    AI_TEXT_MODEL: "ft:proposal-checker",
+    AI_TEXT_API_KEY: "text-key",
+  };
+  assert.equal(aiConfigFromEnv(env).model, "gemini-2.5-pro", "base config ignores task overrides");
+  assert.equal(aiConfigFromEnv(env, "text").model, "ft:proposal-checker", "text task env overrides the base model");
+  assert.equal(aiConfigFromEnv(env, "text").configured, true, "task override with base url and key is configured");
+  assert.equal(aiConfigFromEnv(env, "image").model, "gemini-2.5-pro", "image task falls back to the base config");
+
+  const aiTextFinding = {
+    id: "a1",
+    code: "ai.text",
+    slide: 1,
+    severity: "warn",
+    category: "typo",
+    source: "ai-text",
+    title: "“recieve”",
+    detail: "Misspelling of receive.",
+    quote: "recieve",
+    suggestion: "receive",
+  } as Finding & { source: "ai-text" };
+  const record = createFeedbackRecord({
+    finding: aiTextFinding,
+    rating: "not-useful",
+    deckName: "Deck.pptx",
+    deckFingerprint: "deck-v1-0123456789abcdef",
+    slideCount: 3,
+    correction: '  The finding should suggest "receive".  ',
+    reason: "Right catch.",
+    promptVersion: promptVersionFor("ai-text"),
+    analysisInputId: `input-v1-${"a".repeat(32)}`,
+  });
+  assert.equal(record.correction, 'The finding should suggest "receive".', "correction is trimmed");
+  assert.ok(isFeedbackRecord(record), "a record carrying details passes validation");
+  assert.ok(!isFeedbackRecord({ ...record, correction: "x".repeat(4001) }), "overlong correction is rejected");
+  assert.ok(!isFeedbackRecord({ ...record, reason: "" }), "empty reason string is rejected");
+  assert.ok(
+    !isFeedbackRecord({ ...record, analysisInputId: "input-v1-nothex" }),
+    "malformed analysis input id is rejected",
+  );
+  assert.ok(
+    isFeedbackRecord({ ...record, correction: undefined, reason: undefined }),
+    "details stay optional for old clients",
   );
 }
 

@@ -7,7 +7,7 @@ import { SlidePreview } from "@/components/SlidePreview";
 import { SlideRail, countBySlide } from "@/components/SlideRail";
 import { Summary } from "@/components/Summary";
 import { Button, Card, SearchInput, Tabs, ThemeToggle } from "@/components/ui";
-import { analyzeImages, analyzeText, selectImageJobs } from "@/lib/aiClient";
+import { analyzeImages, analyzeText, selectImageJobs, type AnalysisProvenance } from "@/lib/aiClient";
 import { collectFamilies, googleFontsUrl } from "@/lib/fonts";
 import { runRuleChecks } from "@/lib/checks";
 import {
@@ -76,6 +76,11 @@ export default function Page() {
   // Latest submitted rating per finding, so a slow shared write that loses a
   // race against a newer click cannot store its stale record locally.
   const pendingRatings = useRef(new Map<string, FeedbackRating>());
+  // Which model/prompt actually produced the current findings, per AI pass.
+  const provenanceRef = useRef<{ text: AnalysisProvenance | null; image: AnalysisProvenance | null }>({
+    text: null,
+    image: null,
+  });
 
   const [slide, setSlide] = useState(1);
   const [active, setActive] = useState<string | null>(null);
@@ -165,10 +170,14 @@ export default function Page() {
         imagesPromise,
       ]);
       const combined = [
-        ...(textResult.status === "fulfilled" ? textResult.value : []),
-        ...(imageResult.status === "fulfilled" ? imageResult.value : []),
+        ...(textResult.status === "fulfilled" ? textResult.value.findings : []),
+        ...(imageResult.status === "fulfilled" ? imageResult.value.findings : []),
       ];
       rawAiFindings.current = combined;
+      provenanceRef.current = {
+        text: textResult.status === "fulfilled" ? textResult.value.provenance : null,
+        image: imageResult.status === "fulfilled" ? imageResult.value.provenance : null,
+      };
       // The policy lookup happens before the one combined result is revealed.
       // If Neon has not been provisioned yet, browser-only learning remains the
       // fallback and the existing one-wait experience remains intact.
@@ -314,17 +323,28 @@ export default function Page() {
     setView("slides");
   }, []);
 
-  const submitFeedback = useCallback((finding: Finding, rating: FeedbackRating) => {
+  const submitFeedback = useCallback((
+    finding: Finding,
+    rating: FeedbackRating,
+    details?: { correction?: string; reason?: string },
+  ) => {
     if (!deck || !isAiFinding(finding)) return;
     const deckIdentity = createFeedbackDeckIdentity(fileName, deck);
+    // Provenance from the run that produced this finding beats the status
+    // endpoint, which may already reflect a different (redeployed) model.
+    const provenance = finding.source === "ai-text" ? provenanceRef.current.text : provenanceRef.current.image;
     const record = createFeedbackRecord({
       finding,
       rating,
       deckName: deckIdentity.name,
       deckFingerprint: deckIdentity.fingerprint,
       slideCount: deck.slides.length,
-      provider: status?.provider,
-      model: status?.model,
+      provider: provenance?.provider ?? status?.provider,
+      model: provenance?.model ?? status?.model,
+      promptVersion: provenance?.promptVersion,
+      analysisInputId: provenance?.analysisInputId,
+      correction: details?.correction,
+      reason: details?.reason,
     });
     const fingerprint = findingFingerprint(finding);
     if (!status?.feedbackConfigured) {

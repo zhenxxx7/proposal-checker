@@ -6,6 +6,8 @@
  */
 import puppeteer from "puppeteer-core";
 import { existsSync } from "node:fs";
+import { neon } from "@neondatabase/serverless";
+import { loadEnvLocal } from "./lib/env.mjs";
 
 const CHROME = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -28,6 +30,31 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const status = await (await fetch(new URL("/api/status", url))).json();
 const sharedFeedbackConfigured = status.feedbackConfigured === true;
 console.log(`\nprovider: ${status.label || "none"} · model: ${status.model || "-"} · configured: ${status.configured}`);
+
+/**
+ * In shared mode the ratings this script submits land in the real Neon
+ * feedback table, and the mock's synthetic "Submitt" pattern would suppress
+ * itself on the next run. Deleting exactly the mock-signature rows keeps the
+ * suite repeatable without touching real reviewer feedback.
+ */
+const cleanupMockFeedback = async (label) => {
+  if (!sharedFeedbackConfigured) return;
+  loadEnvLocal();
+  if (!process.env.DATABASE_URL) return;
+  try {
+    const sql = neon(process.env.DATABASE_URL);
+    const rows = await sql.query(
+      `DELETE FROM proposal_checker_feedback
+       WHERE (source = 'ai-image' AND finding->>'quote' = 'Submitt' AND finding->>'suggestion' = 'Submit')
+          OR (source = 'ai-text' AND finding->>'quote' = 'recieve' AND finding->>'suggestion' = 'receive')
+       RETURNING id`,
+    );
+    if (rows.length) console.log(`  info  ${label}: removed ${rows.length} mock feedback row(s) from shared memory`);
+  } catch (error) {
+    console.log(`  info  ${label}: mock feedback cleanup skipped (${error.message})`);
+  }
+};
+await cleanupMockFeedback("pre-run");
 
 const browser = await puppeteer.launch({
   executablePath: CHROME,
@@ -276,6 +303,33 @@ if (status.configured) {
   );
   expect(feedbackPolicyRequests >= 1, "AI run checks the shared feedback policy route");
 
+  console.log("\n11b. Correction details create one more structured write");
+  const detailsToggle = await page.$("[data-group='in-image'] [data-feedback-details-toggle]");
+  expect(!!detailsToggle, "details toggle appears after a rating");
+  if (!detailsToggle) throw new Error("Feedback details toggle was not rendered.");
+  await detailsToggle.click();
+  const correctionField = await page.$("[data-group='in-image'] [data-feedback-correction]");
+  expect(!!correctionField, "correction textarea appears when details are expanded");
+  if (!correctionField) throw new Error("Correction textarea was not rendered.");
+  await correctionField.type("Submit");
+  await page.type("[data-group='in-image'] [data-feedback-reason]", "Button label is a typo.");
+  await page.click("[data-group='in-image'] [data-feedback-details-save]");
+  await page.waitForFunction(
+    () => {
+      const select = document.querySelector("[data-group='in-image'] [data-feedback-rating]");
+      const status = select?.closest("[data-finding]")?.querySelector("[data-feedback-status]");
+      return status?.getAttribute("data-feedback-status") !== "syncing";
+    },
+    { timeout: 10000 },
+  );
+  expect(
+    feedbackWrites === (sharedFeedbackConfigured ? 2 : 0),
+    sharedFeedbackConfigured
+      ? "correction details write through /api/feedback"
+      : "local mode saves details without a network write",
+  );
+  await detailsToggle.click();
+
   await rating.evaluate((select) => select.closest("[data-finding]")?.click());
   await page.waitForSelector("[data-stage]", { timeout: 10000 });
   const slideRating = await page.$eval("[data-stage] + aside [data-feedback-rating]", (select) => select.value);
@@ -314,7 +368,7 @@ if (status.configured) {
   const learningNotice = await page.$eval(learningSelector, (e) => e.innerText);
   expect(/hid|hidden/i.test(learningNotice), `learning notice shown: "${learningNotice.replace(/\n/g, " ")}"`);
   expect(
-    feedbackWrites === (sharedFeedbackConfigured ? 1 : 0),
+    feedbackWrites === (sharedFeedbackConfigured ? 2 : 0),
     "learned re-run does not create another feedback write",
   );
   expect(feedbackPolicyRequests >= 2, "learned re-run checks permanent-memory policy again");
@@ -353,5 +407,6 @@ consoleErrors.slice(0, 6).forEach((e) => console.log(`    ! ${e.slice(0, 160)}`)
 expect(consoleErrors.length === 0, "no console errors");
 
 await browser.close();
+await cleanupMockFeedback("post-run");
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}\n`);
 process.exit(failures === 0 ? 0 : 1);

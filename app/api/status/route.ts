@@ -1,4 +1,5 @@
-import { aiConfig } from "@/lib/ai/config";
+import { aiConfig, type AiTask } from "@/lib/ai/config";
+import { promptVersionFor } from "@/lib/ai/prompts";
 import { sharedFeedbackConfigured } from "@/lib/feedbackServer";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +12,21 @@ export async function GET() {
     provider,
     label,
     model,
+    // Per-task resolution: the text and image passes can serve from different
+    // models once task-scoped env vars (or later the model registry) diverge.
+    tasks: {
+      text: taskStatus("text"),
+      image: taskStatus("image"),
+    },
+    promptVersions: {
+      text: promptVersionFor("ai-text"),
+      image: promptVersionFor("ai-image"),
+    },
     feedbackConfigured: sharedFeedbackConfigured(),
   });
+}
+
+function taskStatus(task: AiTask) {
+  const { configured, provider, label, model } = aiConfig(task);
+  return { configured, provider, label, model };
 }

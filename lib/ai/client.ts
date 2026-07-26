@@ -1,4 +1,4 @@
-import { aiConfig } from "./config";
+import { aiConfig, type AiConfig } from "./config";
 import { coerceFindings, FINDINGS_SCHEMA, type AiFinding } from "./schema";
 
 export type Part = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
@@ -11,31 +11,51 @@ type Mode = "json_schema" | "json_object" | "none";
 const MODES: Mode[] = ["json_schema", "json_object", "none"];
 
 /**
- * Which response_format this endpoint actually accepted. Discovered once, then
+ * Which response_format each endpoint actually accepted. Discovered once, then
  * reused: a deck sends ~30 image requests, and re-probing json_schema on each
- * one would burn 30 rejections against a rate-limited free tier.
+ * one would burn 30 rejections against a rate-limited free tier. Keyed by
+ * endpoint+model — two providers sharing one lambda must not thrash each
+ * other's negotiation.
  */
-let negotiated: Mode | null = null;
+const negotiatedByEndpoint = new Map<string, Mode>();
+
+export interface AskResult {
+  findings: AiFinding[];
+  /** The provider/model that actually answered — feedback provenance. */
+  provider: string;
+  model: string;
+  responseFormatMode: Mode;
+  /** Raw model text before tolerant parsing; used by eval and input capture. */
+  rawText: string;
+}
 
 /**
  * One structured-output call against any OpenAI-compatible endpoint.
- * Gemini, OpenRouter, and any remote OpenAI-compatible endpoint accept this body.
+ * Gemini, OpenRouter, and any remote OpenAI-compatible endpoint accept this
+ * body. `cfg` defaults to the env config; routes pass a task-resolved one.
  */
-export async function askForFindings(system: string, parts: Part[]): Promise<AiFinding[]> {
-  const cfg = aiConfig();
+export async function askForFindings(system: string, parts: Part[], cfg: AiConfig = aiConfig()): Promise<AskResult> {
   if (!cfg.configured) throw new AiError("AI provider is not configured.");
 
   // Not every free model implements json_schema; json_object is the fallback,
   // and a few implement neither, in which case the prompt alone has to carry it.
   // Start from the known-good mode, but keep the rest as fallbacks.
+  const endpointKey = `${cfg.baseUrl}|${cfg.model}`;
+  const negotiated = negotiatedByEndpoint.get(endpointKey);
   const ladder = negotiated ? [negotiated, ...MODES.filter((m) => m !== negotiated)] : MODES;
 
   let lastError = "";
   for (const mode of ladder) {
     try {
       const text = await complete(cfg.baseUrl, cfg.apiKey, cfg.model, system, parts, mode);
-      negotiated = mode;
-      return coerceFindings(parseJson(text));
+      negotiatedByEndpoint.set(endpointKey, mode);
+      return {
+        findings: coerceFindings(parseJson(text)),
+        provider: cfg.provider,
+        model: cfg.model,
+        responseFormatMode: mode,
+        rawText: text,
+      };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       lastError = msg;
@@ -43,7 +63,7 @@ export async function askForFindings(system: string, parts: Part[]): Promise<AiF
       if (!/response_format|json_schema|Unsupported|Invalid|400/i.test(msg)) throw new AiError(msg);
     }
   }
-  negotiated = null;
+  negotiatedByEndpoint.delete(endpointKey);
   throw new AiError(lastError || "AI request failed.");
 }
 

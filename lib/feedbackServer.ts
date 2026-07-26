@@ -1,4 +1,6 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
+import { aiConfig } from "./ai/config";
+import { isArchivedPromptVersion, promptVersionFor } from "./ai/prompts";
 import {
   feedbackLearningKey,
   type FeedbackPolicyRequest,
@@ -97,6 +99,28 @@ async function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS proposal_checker_feedback_deck_prompt_idx
       ON ${TABLE} (source, deck_fingerprint, learning_key, received_at DESC)
     `);
+    // Review workflow, provenance stamps, and the training-input link — one
+    // additive batch so old rows stay valid and old code keeps inserting.
+    await db.query(`
+      ALTER TABLE ${TABLE}
+        ADD COLUMN IF NOT EXISTS correction TEXT,
+        ADD COLUMN IF NOT EXISTS reason TEXT,
+        ADD COLUMN IF NOT EXISTS review_status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (review_status IN ('pending', 'approved', 'rejected')),
+        ADD COLUMN IF NOT EXISTS review_note TEXT,
+        ADD COLUMN IF NOT EXISTS review_correction TEXT,
+        ADD COLUMN IF NOT EXISTS reviewed_by TEXT,
+        ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS prompt_version TEXT,
+        ADD COLUMN IF NOT EXISTS server_provider TEXT,
+        ADD COLUMN IF NOT EXISTS server_model TEXT,
+        ADD COLUMN IF NOT EXISTS analysis_input_id TEXT,
+        ADD COLUMN IF NOT EXISTS provenance TEXT NOT NULL DEFAULT 'client-claimed'
+    `);
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS proposal_checker_feedback_review_idx
+      ON ${TABLE} (review_status, received_at DESC)
+    `);
   })().catch((error) => {
     schemaReady = null;
     throw error;
@@ -117,14 +141,27 @@ export async function saveSharedFeedback(record: FeedbackRecord): Promise<void> 
   await ensureSchema();
   const db = getSql();
   const finding = record.finding;
+  // Server-side stamps: the client copy of provider/model stays as a claimed
+  // value in the legacy columns, the server_* columns are authoritative. The
+  // claimed prompt version is trusted only when it names archived content —
+  // versions are content hashes, so an archived version cannot be forged.
+  const serverConfig = aiConfig(finding.source === "ai-image" ? "image" : "text");
+  const promptVersion =
+    record.promptVersion && isArchivedPromptVersion(record.promptVersion)
+      ? record.promptVersion
+      : promptVersionFor(finding.source);
   await db.query(
     `
       INSERT INTO ${TABLE} (
         id, schema_version, finding_fingerprint, learning_key, deck_fingerprint,
-        slide_count, rating, source, code, category, finding, provider, model, created_at
+        slide_count, rating, source, code, category, finding, provider, model, created_at,
+        correction, reason, prompt_version, server_provider, server_model,
+        analysis_input_id, provenance
       ) VALUES (
         $1, $2, $3, $4, $5,
-        $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14::timestamptz
+        $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14::timestamptz,
+        $15, $16, $17, $18, $19,
+        $20, 'server-stamped'
       )
       ON CONFLICT (id) DO NOTHING
     `,
@@ -143,6 +180,12 @@ export async function saveSharedFeedback(record: FeedbackRecord): Promise<void> 
       record.model?.provider ?? null,
       record.model?.name ?? null,
       record.createdAt,
+      record.correction ?? null,
+      record.reason ?? null,
+      promptVersion,
+      serverConfig.provider,
+      serverConfig.model,
+      record.analysisInputId ?? null,
     ],
   );
 }

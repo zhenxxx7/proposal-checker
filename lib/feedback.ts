@@ -9,6 +9,14 @@ export interface FeedbackRecord {
   fingerprint: string;
   rating: FeedbackRating;
   createdAt: string;
+  /** User-provided corrected text: what the finding should have said. */
+  correction?: string;
+  /** User-provided reason for the rating. */
+  reason?: string;
+  /** Prompt version claimed from the analyze response (verified server-side). */
+  promptVersion?: string;
+  /** Links this rating to the captured analysis input, once capture exists. */
+  analysisInputId?: string;
   deck: {
     name: string;
     slideCount: number;
@@ -179,6 +187,10 @@ export function createFeedbackRecord({
   slideCount,
   provider,
   model,
+  correction,
+  reason,
+  promptVersion,
+  analysisInputId,
 }: {
   finding: Finding & { source: "ai-text" | "ai-image" };
   rating: FeedbackRating;
@@ -187,13 +199,23 @@ export function createFeedbackRecord({
   slideCount: number;
   provider?: string;
   model?: string;
+  correction?: string;
+  reason?: string;
+  promptVersion?: string;
+  analysisInputId?: string;
 }): FeedbackRecord {
+  const trimmedCorrection = correction?.trim().slice(0, 4000);
+  const trimmedReason = reason?.trim().slice(0, 2000);
   return {
     schemaVersion: 1,
     id: feedbackEventId(),
     fingerprint: findingFingerprint(finding),
     rating,
     createdAt: new Date().toISOString(),
+    ...(trimmedCorrection ? { correction: trimmedCorrection } : {}),
+    ...(trimmedReason ? { reason: trimmedReason } : {}),
+    ...(promptVersion ? { promptVersion } : {}),
+    ...(analysisInputId ? { analysisInputId } : {}),
     deck: { name: deckName, slideCount, fingerprint: deckFingerprint },
     finding: {
       source: finding.source,
@@ -404,6 +426,13 @@ export function isFeedbackRecord(value: unknown): value is FeedbackRecord {
   if (!shortString(value.id, 128) || !shortString(value.fingerprint, 256)) return false;
   if (value.rating !== "useful" && value.rating !== "not-useful") return false;
   if (!shortString(value.createdAt, 64) || !Number.isFinite(Date.parse(value.createdAt))) return false;
+  if (value.correction !== undefined && !shortString(value.correction, 4000)) return false;
+  if (value.reason !== undefined && !shortString(value.reason, 2000)) return false;
+  if (value.promptVersion !== undefined && !shortString(value.promptVersion, 64)) return false;
+  if (
+    value.analysisInputId !== undefined &&
+    !(typeof value.analysisInputId === "string" && /^input-v1-[a-f0-9]{32}$/.test(value.analysisInputId))
+  ) return false;
 
   const deck = value.deck;
   if (!isObject(deck) || !shortString(deck.name, 512)) return false;

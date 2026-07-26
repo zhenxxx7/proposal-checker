@@ -1,4 +1,6 @@
 import { askForFindings } from "@/lib/ai/client";
+import { aiConfig } from "@/lib/ai/config";
+import { promptVersionFor, TEXT_SYSTEM_PROMPT } from "@/lib/ai/prompts";
 import { resolveSharedFeedbackPromptMemory } from "@/lib/feedbackServer";
 import { boundedJsonError, isTrustedOrigin, readBoundedJson } from "@/lib/requestGuards";
 
@@ -11,27 +13,6 @@ interface Body {
   slides: { n: number; texts: string[] }[];
   deckFingerprint?: unknown;
 }
-
-const SYSTEM = `You proofread client-facing proposal decks before they are submitted. You are the last set of eyes.
-
-Report ONLY defects a client would notice:
-- Real spelling mistakes and typos.
-- Grammar errors that change meaning or read as careless.
-- Terminology inconsistency across slides: the same product, feature, or client name spelled, capitalised, hyphenated, or spaced two different ways.
-- Placeholder or internal text that should never ship (lorem ipsum, TBD, XXX, draft notes, "[insert]").
-- Punctuation errors: missing terminal punctuation in body copy, doubled marks, mismatched quotes.
-
-Do NOT report:
-- Style preferences, tone, or wording you would merely phrase differently.
-- Deliberate brand casing (e.g. "iPhone", "YesterYears") unless the SAME term appears differently elsewhere in the deck.
-- Sentence fragments in headings, bullets, or labels — decks are written that way on purpose.
-- Missing full stops on headings, titles, or single-word labels.
-- Proper nouns, product names, or acronyms you simply do not recognise.
-
-"quote" must be copied verbatim from the slide text so the user can search for it. "suggestion" is the corrected text only. Set severity to "error" for a clear mistake, "warn" for probable, "info" for a judgement call.
-
-Respond with JSON only, matching: {"findings":[{"slide":1,"severity":"error","category":"typo","quote":"...","suggestion":"...","detail":"..."}]}
-If the deck is clean, return {"findings":[]}. An empty array is a valid and common answer.`;
 
 export async function POST(req: Request) {
   // This route spends paid AI tokens; scripted non-browser calls are refused.
@@ -47,10 +28,19 @@ export async function POST(req: Request) {
   const feedbackMemory = await promptMemory("ai-text", deckFingerprint(requestedDeckFingerprint));
 
   try {
-    const findings = await askForFindings(`${SYSTEM}${feedbackMemory.prompt}`, [
-      { type: "text", text: `Proofread this deck. ${slides.length} slides.\n\n${deck}` },
-    ]);
-    return Response.json({ findings, feedbackMemory: feedbackMeta(feedbackMemory) });
+    const result = await askForFindings(
+      `${TEXT_SYSTEM_PROMPT}${feedbackMemory.prompt}`,
+      [{ type: "text", text: `Proofread this deck. ${slides.length} slides.\n\n${deck}` }],
+      aiConfig("text"),
+    );
+    return Response.json({
+      findings: result.findings,
+      // Actual serving provenance — the browser stamps it into feedback records.
+      model: { provider: result.provider, name: result.model },
+      promptVersion: promptVersionFor("ai-text"),
+      analysisInput: null,
+      feedbackMemory: feedbackMeta(feedbackMemory),
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return Response.json({ findings: [], error: message }, { status: 502 });

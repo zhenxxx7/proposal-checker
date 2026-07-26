@@ -40,13 +40,25 @@ export interface AiConfig {
   configured: boolean;
 }
 
-export function aiConfig(): AiConfig {
-  const provider = (process.env.AI_PROVIDER ?? "gemini") as Provider;
+/**
+ * The two AI passes can serve from different models — e.g. Gemini keeps the
+ * vision pass while a fine-tuned model takes text findings. Task-scoped env
+ * vars (AI_TEXT_*, AI_IMAGE_*) override the plain AI_* set per task.
+ */
+export type AiTask = "text" | "image";
+
+/** Pure function of an env record, so tests never have to mutate process.env. */
+export function aiConfigFromEnv(env: Record<string, string | undefined>, task?: AiTask): AiConfig {
+  const prefix = task === "text" ? "AI_TEXT_" : task === "image" ? "AI_IMAGE_" : null;
+  const pick = (suffix: "PROVIDER" | "BASE_URL" | "MODEL" | "API_KEY") =>
+    (prefix ? env[`${prefix}${suffix}`] : undefined) ?? env[`AI_${suffix}`];
+
+  const provider = (pick("PROVIDER") ?? "gemini") as Provider;
   const preset = provider === "custom" ? undefined : PRESETS[provider];
 
-  const baseUrl = (process.env.AI_BASE_URL ?? preset?.baseUrl ?? "").replace(/\/$/, "");
-  const model = process.env.AI_MODEL ?? preset?.model ?? "";
-  const apiKey = process.env.AI_API_KEY ?? "";
+  const baseUrl = (pick("BASE_URL") ?? preset?.baseUrl ?? "").replace(/\/$/, "");
+  const model = pick("MODEL") ?? preset?.model ?? "";
+  const apiKey = pick("API_KEY") ?? "";
   // Every supported provider is a hosted endpoint that authenticates with a key.
   const configured = Boolean(baseUrl && model && apiKey);
 
@@ -58,4 +70,8 @@ export function aiConfig(): AiConfig {
     apiKey,
     configured,
   };
+}
+
+export function aiConfig(task?: AiTask): AiConfig {
+  return aiConfigFromEnv(process.env, task);
 }
