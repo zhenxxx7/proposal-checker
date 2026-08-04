@@ -99,12 +99,12 @@ export default async function AdminReviewPage({ searchParams }: PageProps<"/admi
         data-learning-mode={approvalGate ? "approval-required" : "immediate"}
       >
         <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          Gemini learning: {approvalGate ? "approval required" : "active immediately"}
+          Gemini feedback memory: {approvalGate ? "approval required" : "active immediately"}
         </p>
         <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
           {approvalGate
-            ? "New ratings are stored, but approved rows only steer Gemini and training exports."
-            : "New ratings are stored and can steer Gemini immediately. Approve rows only when curating SFT/DPO training."}
+            ? "Ratings are stored. Approved rows only add bounded prompt guidance and enter training exports."
+            : "Ratings add bounded prompt guidance on later runs; Gemini weights never change. Approve rows only for SFT/DPO training exports."}
         </p>
       </section>
 
