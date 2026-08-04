@@ -45,7 +45,7 @@ export default async function AdminDataPage({ searchParams }: PageProps<"/admin/
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 text-xs text-zinc-400">
-            <a href="/admin" className="hover:text-indigo-600 dark:hover:text-indigo-400">Feedback review</a>
+            <a href="/admin" className="hover:text-indigo-600 dark:hover:text-indigo-400">Feedback dashboard</a>
             <span>/</span>
             <span>Data portal</span>
           </div>

@@ -1,6 +1,11 @@
 import { adminConfigured } from "@/lib/adminAuth";
 import { verifySession } from "@/lib/adminSession";
-import { adminQueueConfigured, reviewFeedback, type ReviewDecision } from "@/lib/adminServer";
+import {
+  adminQueueConfigured,
+  approvePendingFeedback,
+  reviewFeedback,
+  type ReviewDecision,
+} from "@/lib/adminServer";
 import { pinAnalysisInput } from "@/lib/analysisInputs";
 import { isTrustedOrigin } from "@/lib/requestGuards";
 
@@ -24,16 +29,28 @@ export async function POST(request: Request) {
   } catch {
     return Response.json({ error: "Invalid form" }, { status: 400 });
   }
+  const action = String(form.get("action") ?? "");
   const id = String(form.get("id") ?? "");
   const decision = String(form.get("decision") ?? "") as ReviewDecision;
   const note = String(form.get("note") ?? "").slice(0, 2000);
   const correction = String(form.get("correction") ?? "").slice(0, 4000);
   const back = sanitizeQuery(String(form.get("redirect") ?? ""));
-  if (!id || id.length > 128 || !DECISIONS.has(decision)) {
-    return Response.json({ error: "Invalid review request" }, { status: 400 });
-  }
 
   try {
+    if (action === "approve-pending") {
+      const rows = await approvePendingFeedback();
+      await Promise.all(
+        rows
+          .map((row) => row.analysisInputId)
+          .filter((value): value is string => Boolean(value))
+          .map((id) => pinAnalysisInput(id).catch((error) => console.error("Pinning analysis input failed", error))),
+      );
+      return redirect(request, `/admin?${back ? `${back}&` : ""}notice=bulk-approved`);
+    }
+    if (!id || id.length > 128 || !DECISIONS.has(decision)) {
+      return Response.json({ error: "Invalid review request" }, { status: 400 });
+    }
+
     const { found, analysisInputId } = await reviewFeedback({ id, decision, note, correction });
     if (!found) return Response.json({ error: "Unknown feedback id" }, { status: 404 });
     // Approved training evidence must outlive the capture TTL.

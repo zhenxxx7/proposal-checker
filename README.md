@@ -218,13 +218,16 @@ serving from Gemini throughout.
 
 ### Admin review queue
 
-Set `ADMIN_TOKEN` (32+ random bytes) and open `/admin`: every rating arrives
-as **pending**, and the queue approves, rejects, or corrects it. Approval
-matters twice — with `FEEDBACK_REQUIRE_APPROVAL=true` only approved rows steer
-prompts and suppression, and the training exports
-(`/api/admin/export?format=sft|dpo`) only ever contain approved rows. A
-"not useful" rating without a corrected suggestion is flagged in the queue:
-it still suppresses repeats, but only a correction makes it trainable.
+Set `ADMIN_TOKEN` (32+ random bytes) and open `/admin`. The dashboard separates
+runtime learning from training curation: with `FEEDBACK_REQUIRE_APPROVAL=false`,
+ratings steer Gemini immediately, while **Include in training** controls the
+curated SFT/DPO export. The pending queue supports **Include all in training**
+for batch curation; correction and internal note fields stay optional under the
+advanced annotation panel. With `FEEDBACK_REQUIRE_APPROVAL=true`, approval also
+controls runtime prompt memory. Training exports
+(`/api/admin/export?format=sft|dpo`) remain approved-only in both modes. A
+"not useful" rating without a corrected suggestion is flagged because it needs
+an explicit target to be useful training data.
 Verification: `npm run verify:admin -- <adminToken>` (dev server + Neon
 required).
 

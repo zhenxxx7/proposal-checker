@@ -11,11 +11,17 @@ import {
   type ReviewStatus,
 } from "@/lib/adminServer";
 import { effectiveCorrection } from "@/lib/feedbackExport";
+import { feedbackRequiresApproval } from "@/lib/feedbackServer";
 
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 50;
 const STATUSES: ReviewStatus[] = ["pending", "approved", "rejected"];
+const STATUS_LABELS: Record<ReviewStatus, string> = {
+  pending: "Training queue",
+  approved: "Included in training",
+  rejected: "Excluded",
+};
 
 /**
  * Server-rendered MPA review queue: forms post to /api/admin/review, which
@@ -37,6 +43,8 @@ export default async function AdminReviewPage({ searchParams }: PageProps<"/admi
   const status = STATUSES.includes(params?.status as ReviewStatus) ? (params.status as ReviewStatus) : "pending";
   const before = typeof params?.before === "string" ? params.before : undefined;
   const reviewError = params?.error === "review";
+  const bulkApproved = params?.notice === "bulk-approved";
+  const approvalGate = feedbackRequiresApproval();
   const currentQuery = `status=${status}${before ? `&before=${encodeURIComponent(before)}` : ""}`;
 
   const [counts, rows] = await Promise.all([
@@ -50,9 +58,9 @@ export default async function AdminReviewPage({ searchParams }: PageProps<"/admi
     <main className="mx-auto max-w-5xl px-4 py-8">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Feedback review</h1>
+          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Feedback dashboard</h1>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Approved rows steer analysis when the approval gate is on, and only they can be exported for training.
+            Monitor collected feedback. Curate only rows you want in SFT/DPO training.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -82,22 +90,54 @@ export default async function AdminReviewPage({ searchParams }: PageProps<"/admi
         </div>
       </header>
 
-      <nav className="mt-5 flex gap-2" data-review-tabs>
+      <section
+        className={`mt-5 rounded-xl border px-4 py-3 ${
+          approvalGate
+            ? "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30"
+            : "border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30"
+        }`}
+        data-learning-mode={approvalGate ? "approval-required" : "immediate"}
+      >
+        <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          Gemini learning: {approvalGate ? "approval required" : "active immediately"}
+        </p>
+        <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+          {approvalGate
+            ? "New ratings are stored, but approved rows only steer Gemini and training exports."
+            : "New ratings are stored and can steer Gemini immediately. Approve rows only when curating SFT/DPO training."}
+        </p>
+      </section>
+
+      <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3">
         {STATUSES.map((tab) => (
           <a
             key={tab}
             href={`/admin?status=${tab}`}
-            data-review-tab={tab}
-            className={`rounded-full px-3 py-1 text-xs font-medium ${
+            className={`rounded-lg border px-3 py-2 ${
               tab === status
-                ? "bg-indigo-600 text-white"
-                : "border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                ? "border-indigo-400 bg-indigo-50 dark:border-indigo-600 dark:bg-indigo-950/40"
+                : "border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800"
             }`}
+            data-review-tab={tab}
           >
-            {tab} ({counts[tab]})
+            <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{STATUS_LABELS[tab]}</span>
+            <span className="mt-0.5 block text-lg font-semibold text-zinc-900 dark:text-zinc-100">{counts[tab]}</span>
           </a>
         ))}
-      </nav>
+      </div>
+
+      {status === "pending" && counts.pending > 0 && (
+        <form method="post" action="/api/admin/review" className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 dark:border-indigo-900 dark:bg-indigo-950/30">
+          <input type="hidden" name="action" value="approve-pending" />
+          <input type="hidden" name="redirect" value="status=pending" />
+          <p className="min-w-0 flex-1 text-xs text-indigo-950 dark:text-indigo-100">
+            Ready to curate in batch? This includes all {counts.pending} pending row(s) in SFT/DPO exports.
+          </p>
+          <button className="rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">
+            Include all in training
+          </button>
+        </form>
+      )}
 
       {reviewError && (
         <p
@@ -107,10 +147,15 @@ export default async function AdminReviewPage({ searchParams }: PageProps<"/admi
           Saving that review failed — the database did not confirm the change. Try again.
         </p>
       )}
+      {bulkApproved && (
+        <p className="mt-4 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+          Pending feedback included in training.
+        </p>
+      )}
 
       {groups.length === 0 ? (
         <p className="mt-10 text-sm text-zinc-500 dark:text-zinc-400" data-review-empty>
-          No {status} feedback.
+          No {STATUS_LABELS[status].toLowerCase()} feedback.
         </p>
       ) : (
         <div className="mt-6 flex flex-col gap-6">
@@ -168,6 +213,17 @@ function ReviewRow({ row, currentQuery }: { row: AdminFeedbackRow; currentQuery:
         >
           {row.rating}
         </span>
+        <span
+          className={`rounded-full px-2 py-0.5 font-medium ${
+            row.review_status === "approved"
+              ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300"
+              : row.review_status === "rejected"
+                ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                : "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+          }`}
+        >
+          {STATUS_LABELS[row.review_status]}
+        </span>
         <span className="text-zinc-400">{row.source}</span>
         <span className="text-zinc-400">{row.category}</span>
         <span className="font-mono text-zinc-400">{row.deck_fingerprint.slice(0, 16)}</span>
@@ -194,53 +250,63 @@ function ReviewRow({ row, currentQuery }: { row: AdminFeedbackRow; currentQuery:
       {row.reason && <p className="mt-1 text-xs italic text-zinc-500">User comment: {row.reason}</p>}
       {row.review_note && <p className="mt-1 text-xs text-zinc-500">Note: {row.review_note}</p>}
 
-      <form method="post" action="/api/admin/review" className="mt-2.5 flex flex-col gap-2">
-        <input type="hidden" name="id" value={row.id} />
-        <input type="hidden" name="redirect" value={currentQuery} />
-        <textarea
-          name="correction"
-          rows={1}
-          maxLength={4000}
-          defaultValue={correction ?? ""}
-          placeholder="Corrected suggestion (what the finding should have said)"
-          className="w-full resize-y rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-800 outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
-        />
-        <div className="flex flex-wrap items-center gap-2">
+      <details className="mt-2.5 rounded-lg border border-zinc-200 dark:border-zinc-800" open={row.review_status === "pending" && needsCorrection}>
+        <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+          {row.review_status === "pending" ? "Choose training status" : "Change training status / annotation"}
+        </summary>
+        <form method="post" action="/api/admin/review" className="flex flex-col gap-2 border-t border-zinc-100 p-3 dark:border-zinc-800">
+          <input type="hidden" name="id" value={row.id} />
+          <input type="hidden" name="redirect" value={currentQuery} />
+          <details open={Boolean(correction) || needsCorrection}>
+            <summary className="cursor-pointer text-[11px] text-zinc-500 dark:text-zinc-400">
+              Add training correction (optional)
+            </summary>
+            <textarea
+              name="correction"
+              rows={2}
+              maxLength={4000}
+              defaultValue={correction ?? ""}
+              placeholder="What should the finding have said?"
+              className="mt-2 w-full resize-y rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-800 outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+            />
+          </details>
           <input
             name="note"
             maxLength={2000}
-            placeholder="Review note (optional)"
-            className="min-w-48 flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-800 outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+            placeholder="Internal note (optional)"
+            className="w-full rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-800 outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
           />
-          {row.review_status !== "approved" && (
-            <button
-              name="decision"
-              value="approved"
-              className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500"
-            >
-              Approve
-            </button>
-          )}
-          {row.review_status !== "rejected" && (
-            <button
-              name="decision"
-              value="rejected"
-              className="rounded-md bg-rose-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-rose-500"
-            >
-              Reject
-            </button>
-          )}
-          {row.review_status !== "pending" && (
-            <button
-              name="decision"
-              value="pending"
-              className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              Back to pending
-            </button>
-          )}
-        </div>
-      </form>
+          <div className="flex flex-wrap items-center gap-2">
+            {row.review_status !== "approved" && (
+              <button
+                name="decision"
+                value="approved"
+                className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500"
+              >
+                Include in training
+              </button>
+            )}
+            {row.review_status !== "rejected" && (
+              <button
+                name="decision"
+                value="rejected"
+                className="rounded-md bg-rose-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-rose-500"
+              >
+                Exclude from training
+              </button>
+            )}
+            {row.review_status !== "pending" && (
+              <button
+                name="decision"
+                value="pending"
+                className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                Return to queue
+              </button>
+            )}
+          </div>
+        </form>
+      </details>
     </div>
   );
 }

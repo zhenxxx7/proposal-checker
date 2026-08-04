@@ -117,6 +117,22 @@ export async function listFeedbackForDecks(deckFingerprints: readonly string[]):
   )) as AdminFeedbackRow[];
 }
 
+export async function approvePendingFeedback(reviewer = "admin"): Promise<{ id: string; analysisInputId: string | null }[]> {
+  await ensureFeedbackSchema();
+  const rows = (await getSql().query(
+    `
+      UPDATE ${TABLE} SET
+        review_status = 'approved',
+        reviewed_by = $1,
+        reviewed_at = NOW()
+      WHERE review_status = 'pending'
+      RETURNING id, analysis_input_id
+    `,
+    [reviewer],
+  )) as { id: string; analysis_input_id: string | null }[];
+  return rows.map((row) => ({ id: row.id, analysisInputId: row.analysis_input_id }));
+}
+
 export async function countByStatus(): Promise<Record<ReviewStatus, number>> {
   await ensureFeedbackSchema();
   const rows = (await getSql().query(
