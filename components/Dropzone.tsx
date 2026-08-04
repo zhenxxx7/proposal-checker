@@ -17,6 +17,7 @@ const CHECKS = [
 export interface GoogleSlidesImport {
   name: string;
   deck: Deck;
+  sourceUrl: string;
 }
 
 interface AnalysisProgress {
@@ -105,7 +106,7 @@ export function Dropzone({
             : `Loading prepared slides... ${percent === null ? formatBytes(progress.loaded) : `${percent}%`}`,
         );
       });
-      await onGoogleSlides({ name: imported.name, deck: imported.deck });
+      await onGoogleSlides({ name: imported.name, deck: imported.deck, sourceUrl: url });
     } catch (error) {
       setLinkError(error instanceof Error ? error.message : "Could not import this Google Slides link.");
     } finally {

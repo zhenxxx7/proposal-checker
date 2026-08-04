@@ -102,9 +102,10 @@ Search filters the list; it never changes the verdict or the counters. Every fix
 suggestion has a one-click **copy**. Light and dark themes, remembered. When a provider
 is configured, local rules plus AI text and vision checks run as one automatic analysis;
 the button only re-runs AI, and disables itself with a reason when no provider is set.
-AI findings also carry a **Useful / Not useful** dropdown. The latest choice is
-saved in that browser and appears consistently in Summary and Slides; rule
-findings have no feedback control. On the next AI run, findings that match the
+AI findings also carry a **Useful / Not useful** dropdown. An optional **Add comment**
+toggle records context alongside the rating. The latest choice is saved in that
+browser and appears consistently in Summary and Slides; rule findings have no
+feedback control. On the next AI run, findings that match the
 latest normalized pattern marked **Not useful** are hidden for the same deck.
 Cross-deck suppression is deliberately conservative: at least two distinct
 decks must agree and at least 80% of their latest ratings must be **Not useful**.
@@ -177,15 +178,17 @@ analyze routes — the app deliberately keeps no per-IP counters of its own.
 
 ### Training data capture and evaluation
 
-By default nothing durable stores deck content — that is a privacy feature,
-but it also means feedback rows hold only the AI's *output*. Setting
-`TRAINING_CAPTURE=true` changes the posture deliberately: each analysis then
-stores its sanitized model input (the slide text block; for images a content
-hash and context line, never pixels) so approved feedback can be reconstructed
-into SFT/DPO training pairs. Captured inputs expire after
-`TRAINING_CAPTURE_TTL_DAYS` (default 90) unless an admin approval pins them;
-`npm run retention` purges expired rows and `--purge-deck deck-v1-<hex>`
-deletes everything one client's deck produced.
+Without `DATABASE_URL`, nothing durable stores deck content — feedback stays
+in browser `localStorage`. With Neon, every successful upload/import stores a
+sanitized deck event (name, source, Google URL when applicable, extracted slide
+text, and lightweight media metadata) for the data portal and tuning. Setting
+`TRAINING_CAPTURE=true` additionally stores the exact model input and response
+provenance (for images a content hash and context line, never pixels) so
+approved feedback can be reconstructed into SFT/DPO training pairs. These
+explicit analysis captures expire after `TRAINING_CAPTURE_TTL_DAYS` (default 90)
+unless an admin approval pins them; deck events remain until deleted.
+`npm run retention` purges expired rows and `--purge-deck deck-v1-<hex>` deletes
+deck events, captures, and feedback for one client's deck.
 
 `npm run eval` scores any model against the benchmark fixtures
 (`scripts/fixtures/eval-cases.jsonl`) with the production prompt and no
@@ -289,14 +292,14 @@ Deploys to Vercel as-is. Set `AI_PROVIDER` and `AI_API_KEY` as environment
 variables — they are read server-side only and never reach the browser. All
 supported providers are hosted, so nothing depends on a machine-local endpoint.
 
-Local `.pptx` files are never uploaded. For a Google Slides link, one serverless
-request downloads and parses the raw export in memory; no file, database record,
-or durable server state is created. The browser receives only structured slide
-data and referenced, size-reduced preview assets. With no `DATABASE_URL`, AI
-feedback and learned suppression stay in browser `localStorage`. With Neon,
-only rated finding metadata becomes durable shared memory; a bounded matching
-subset is added server-side to next Gemini prompt. Deck files and image previews
-remain ephemeral.
+Local `.pptx` bytes are never uploaded. For a Google Slides link, one serverless
+request downloads and parses the raw export in memory; with Neon configured, a
+capture event stores the deck name, source, Google URL, extracted slide text, and
+lightweight media metadata for tuning and the admin data portal. Raw PPTX bytes
+and image pixels remain ephemeral. With no `DATABASE_URL`, AI feedback and
+learned suppression stay in browser `localStorage`; with Neon, each rating and
+optional comment is stored with its finding, and a bounded matching subset is
+added server-side to the next Gemini prompt.
 The AI pass sends only:
 
 - the extracted slide text, in one request;

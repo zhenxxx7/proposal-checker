@@ -108,6 +108,15 @@ export async function listApprovedForExport({
   return listFeedbackForReview({ status: "approved", limit, before });
 }
 
+export async function listFeedbackForDecks(deckFingerprints: readonly string[]): Promise<AdminFeedbackRow[]> {
+  if (!deckFingerprints.length) return [];
+  await ensureFeedbackSchema();
+  return (await getSql().query(
+    `SELECT ${ROW_COLUMNS} FROM ${TABLE} WHERE deck_fingerprint = ANY($1::text[]) ORDER BY received_at DESC, id DESC LIMIT 10000`,
+    [[...deckFingerprints]],
+  )) as AdminFeedbackRow[];
+}
+
 export async function countByStatus(): Promise<Record<ReviewStatus, number>> {
   await ensureFeedbackSchema();
   const rows = (await getSql().query(

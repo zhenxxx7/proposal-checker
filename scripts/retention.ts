@@ -42,7 +42,7 @@ if (deckFingerprint !== undefined) {
   } else {
     const removed = await purgeDeck(deckFingerprint);
     console.log(
-      `deleted ${removed.inputs} captured input(s) and ${removed.feedback} feedback row(s) for ${deckFingerprint}`,
+      `deleted ${removed.inputs} captured input(s), ${removed.feedback} feedback row(s), and ${removed.decks} deck event(s) for ${deckFingerprint}`
     );
   }
   process.exit(0);

@@ -24,6 +24,7 @@ import {
 } from "../lib/analysisInputs";
 import { IMAGE_SYSTEM_PROMPT, PROMPT_ARCHIVE, TEXT_SYSTEM_PROMPT } from "../lib/ai/prompts";
 import { correctedFinding, effectiveCorrection, wireFinding } from "../lib/feedbackExport";
+import { latestDeckCaptureFor, type DeckCaptureRow } from "../lib/deckServer";
 
 loadEnvLocal();
 
@@ -82,6 +83,25 @@ function isTrainSplit(deckFingerprint: string): boolean {
   return parseInt(createHash("sha256").update(deckFingerprint).digest("hex").slice(0, 2), 16) < TRAIN_BYTE_CEILING;
 }
 
+/** Converts the durable deck event into the same input shape as analysis capture. */
+function analysisInputFromDeckCapture(capture: DeckCaptureRow): AnalysisInputRow {
+  return {
+    id: capture.id,
+    deck_fingerprint: capture.deck_fingerprint,
+    source: "ai-text",
+    prompt_version: "deck-capture-v1",
+    input_hash: capture.deck_fingerprint,
+    payload: { slides: capture.slides },
+    feedback_memory: null,
+    provider: "unknown",
+    model: "unknown",
+    response_findings: null,
+    response_format_mode: null,
+    created_at: capture.created_at,
+    expires_at: null,
+  };
+}
+
 async function main() {
   if (!process.env.DATABASE_URL) {
     console.error("DATABASE_URL is not configured — nothing to build.");
@@ -110,7 +130,13 @@ async function main() {
     }
     const key = `${row.deck_fingerprint}|${row.source}`;
     if (!fallbackCache.has(key)) {
-      fallbackCache.set(key, await latestInputFor(row.deck_fingerprint, row.source as AnalysisInputSource));
+      const captured = await latestInputFor(row.deck_fingerprint, row.source as AnalysisInputSource);
+      if (captured) {
+        fallbackCache.set(key, captured);
+      } else {
+        const deckCapture = await latestDeckCaptureFor(row.deck_fingerprint);
+        fallbackCache.set(key, deckCapture ? analysisInputFromDeckCapture(deckCapture) : null);
+      }
     }
     return fallbackCache.get(key) ?? null;
   };

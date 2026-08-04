@@ -8,6 +8,7 @@ import { SlideRail, countBySlide } from "@/components/SlideRail";
 import { Summary } from "@/components/Summary";
 import { Button, Card, SearchInput, Tabs, ThemeToggle } from "@/components/ui";
 import { analyzeImages, analyzeText, selectImageJobs, type AnalysisProvenance } from "@/lib/aiClient";
+import { createDeckCaptureRecord, storeDeckCapture, type DeckSourceInfo } from "@/lib/deckClient";
 import { collectFamilies, googleFontsUrl } from "@/lib/fonts";
 import { runRuleChecks } from "@/lib/checks";
 import {
@@ -228,7 +229,11 @@ export default function Page() {
     }
   }, []);
 
-  const loadDeck = useCallback(async (name: string, readDeck: () => Promise<Deck>) => {
+  const loadDeck = useCallback(async (
+    name: string,
+    readDeck: () => Promise<Deck>,
+    sourceInfo: DeckSourceInfo,
+  ) => {
     if (deckLoading.current) return;
     deckLoading.current = true;
     setPhase("parsing");
@@ -252,12 +257,16 @@ export default function Page() {
       // must not leave automatic AI analysis disabled for the whole session.
       const [parsed, providerStatus] = await Promise.all([readDeck(), fetchAiStatus()]);
       setStatus(providerStatus);
+      const deckIdentity = createFeedbackDeckIdentity(name, parsed);
+      // Capture every successful upload/import for the tuning portal. This is
+      // best effort and never blocks checking when Neon is unavailable.
+      await storeDeckCapture(createDeckCaptureRecord(name, parsed, sourceInfo, deckIdentity.fingerprint));
       // Shared mode restores selections from the policy response after the
       // run; seeding from localStorage there would resurrect divergent state.
       setFeedback(
         providerStatus.feedbackConfigured
           ? {}
-          : loadFeedbackSelections(createFeedbackDeckIdentity(name, parsed)),
+          : loadFeedbackSelections(deckIdentity),
       );
       setSlide(1);
       setView("summary");
@@ -286,11 +295,12 @@ export default function Page() {
   }, [runCombined]);
 
   const load = useCallback(
-    (file: File) => loadDeck(file.name, async () => parsePptx(await file.arrayBuffer())),
+    (file: File) => loadDeck(file.name, async () => parsePptx(await file.arrayBuffer()), { source: "upload" }),
     [loadDeck],
   );
   const loadGoogleSlides = useCallback(
-    (source: GoogleSlidesImport) => loadDeck(source.name, () => Promise.resolve(source.deck)),
+    (source: GoogleSlidesImport) =>
+      loadDeck(source.name, () => Promise.resolve(source.deck), { source: "google-slides", sourceUrl: source.sourceUrl }),
     [loadDeck],
   );
 

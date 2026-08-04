@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
+import { purgeDeckCaptures } from "./deckServer";
 
 /**
  * Captures the exact model input of an analysis so an approved feedback row
  * can later be reconstructed into a training pair — without input, feedback
  * stores only the output half. Strictly opt-in: TRAINING_CAPTURE must be
- * "true", otherwise deployment behavior is byte-identical to before and the
- * README's "decks are never persisted" promise keeps holding. Captured rows
- * expire after TRAINING_CAPTURE_TTL_DAYS unless an admin approval pins them.
+ * "true", otherwise exact model inputs are not stored. Deck event capture is
+ * separate and stores sanitized slide text/metadata when Neon is configured;
+ * raw PPTX bytes and image pixels remain ephemeral. Captured rows expire after
+ * TRAINING_CAPTURE_TTL_DAYS unless an admin approval pins them.
  */
 
 const TABLE = "proposal_checker_analysis_inputs";
@@ -175,7 +177,7 @@ export async function countExpiredInputs(): Promise<number> {
 }
 
 /** Client data-deletion: removes a deck's captured inputs AND feedback rows. */
-export async function purgeDeck(deckFingerprint: string): Promise<{ inputs: number; feedback: number }> {
+export async function purgeDeck(deckFingerprint: string): Promise<{ inputs: number; feedback: number; decks: number }> {
   await ensureSchema();
   const db = getSql();
   const inputs = (await db.query(`DELETE FROM ${TABLE} WHERE deck_fingerprint = $1 RETURNING id`, [
@@ -185,7 +187,8 @@ export async function purgeDeck(deckFingerprint: string): Promise<{ inputs: numb
     `DELETE FROM proposal_checker_feedback WHERE deck_fingerprint = $1 RETURNING id`,
     [deckFingerprint],
   )) as { id: string }[];
-  return { inputs: inputs.length, feedback: feedback.length };
+  const decks = await purgeDeckCaptures(deckFingerprint);
+  return { inputs: inputs.length, feedback: feedback.length, decks };
 }
 
 export interface AnalysisInputRow {

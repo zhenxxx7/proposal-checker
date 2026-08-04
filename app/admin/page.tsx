@@ -57,6 +57,12 @@ export default async function AdminReviewPage({ searchParams }: PageProps<"/admi
         </div>
         <div className="flex items-center gap-2">
           <a
+            href="/admin/data"
+            className="rounded-md border border-indigo-200 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-900 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
+          >
+            Data portal
+          </a>
+          <a
             href="/api/admin/export?format=sft"
             className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
@@ -185,7 +191,7 @@ function ReviewRow({ row, currentQuery }: { row: AdminFeedbackRow; currentQuery:
           “{quote}” → {suggestion || "—"}
         </p>
       )}
-      {row.reason && <p className="mt-1 text-xs italic text-zinc-500">Reviewer: {row.reason}</p>}
+      {row.reason && <p className="mt-1 text-xs italic text-zinc-500">User comment: {row.reason}</p>}
       {row.review_note && <p className="mt-1 text-xs text-zinc-500">Note: {row.review_note}</p>}
 
       <form method="post" action="/api/admin/review" className="mt-2.5 flex flex-col gap-2">
