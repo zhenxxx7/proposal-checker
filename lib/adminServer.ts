@@ -108,6 +108,29 @@ export async function listApprovedForExport({
   return listFeedbackForReview({ status: "approved", limit, before });
 }
 
+/** Complete durable feedback ledger for future provider-specific dataset transforms. */
+export async function listFeedbackForLedger({
+  limit = 500,
+  before,
+}: {
+  limit?: number;
+  before?: string;
+} = {}): Promise<AdminFeedbackRow[]> {
+  await ensureFeedbackSchema();
+  const cursor = parseCursor(before);
+  const safeLimit = Math.min(Math.max(Math.floor(limit), 1), 1_000);
+  const params: unknown[] = [safeLimit];
+  let where = "TRUE";
+  if (cursor) {
+    where = "(received_at, id) < ($2::timestamptz, $3)";
+    params.push(cursor.receivedAt, cursor.id);
+  }
+  return (await getSql().query(
+    `SELECT ${ROW_COLUMNS} FROM ${TABLE} WHERE ${where} ORDER BY received_at DESC, id DESC LIMIT $1`,
+    params,
+  )) as AdminFeedbackRow[];
+}
+
 export async function listFeedbackForDecks(deckFingerprints: readonly string[]): Promise<AdminFeedbackRow[]> {
   if (!deckFingerprints.length) return [];
   await ensureFeedbackSchema();

@@ -1,6 +1,6 @@
 /**
- * Builds training-ready datasets from approved feedback joined to captured
- * analysis inputs:
+ * Builds curated SFT/DPO datasets plus a provider-neutral ledger of every
+ * durable feedback event joined to captured analysis inputs:
  *   npm run dataset [-- --out training-data --cap-per-pattern 3 --min-sft 50 --min-dpo 20]
  *
  * One example per reviewed finding: the user message is the finding's slide
@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadEnvLocal } from "./lib/env.mjs";
-import { listApprovedForExport, rowCursor, type AdminFeedbackRow } from "../lib/adminServer";
+import { listFeedbackForLedger, rowCursor, type AdminFeedbackRow } from "../lib/adminServer";
 import {
   getAnalysisInputs,
   latestInputFor,
@@ -23,7 +23,7 @@ import {
   type AnalysisInputSource,
 } from "../lib/analysisInputs";
 import { IMAGE_SYSTEM_PROMPT, PROMPT_ARCHIVE, TEXT_SYSTEM_PROMPT } from "../lib/ai/prompts";
-import { correctedFinding, effectiveCorrection, wireFinding } from "../lib/feedbackExport";
+import { correctedFinding, effectiveCorrection, exportEligible, wireFinding } from "../lib/feedbackExport";
 import { latestDeckCaptureFor, type DeckCaptureRow } from "../lib/deckServer";
 
 loadEnvLocal();
@@ -45,7 +45,10 @@ interface SlidePayload {
 }
 
 const stats = {
+  feedbackRows: 0,
   approvedRows: 0,
+  ledgerRows: 0,
+  ledgerMissingInput: 0,
   eligible: 0,
   skippedNoInput: 0,
   skippedImageSource: 0,
@@ -91,7 +94,7 @@ function analysisInputFromDeckCapture(capture: DeckCaptureRow): AnalysisInputRow
     source: "ai-text",
     prompt_version: "deck-capture-v1",
     input_hash: capture.deck_fingerprint,
-    payload: { slides: capture.slides },
+    payload: { slides: capture.slides.map((slide) => ({ n: slide.index, texts: slide.texts })) },
     feedback_memory: null,
     provider: "unknown",
     model: "unknown",
@@ -102,26 +105,76 @@ function analysisInputFromDeckCapture(capture: DeckCaptureRow): AnalysisInputRow
   };
 }
 
+/** Provider-neutral source record. Transform this ledger only after selecting a target provider/model. */
+function feedbackLedgerRecord(row: AdminFeedbackRow, input: AnalysisInputRow | null): string {
+  return JSON.stringify({
+    schema_version: "feedback-ledger-v1",
+    feedback: {
+      id: row.id,
+      received_at: row.received_at,
+      review_status: row.review_status,
+      rating: row.rating,
+      user_comment: row.reason,
+      user_correction: row.correction,
+      admin_note: row.review_note,
+      admin_correction: row.review_correction,
+      finding: row.finding,
+      source: row.source,
+      code: row.code,
+      category: row.category,
+      deck_fingerprint: row.deck_fingerprint,
+      learning_key: row.learning_key,
+      provenance: row.provenance,
+      served_provider: row.server_provider ?? row.provider,
+      served_model: row.server_model ?? row.model,
+      prompt_version: row.prompt_version,
+    },
+    analysis_input: input
+      ? {
+          origin: input.id.startsWith("deck-event-v1-") ? "deck-event" : "analysis-capture",
+          id: input.id,
+          source: input.source,
+          prompt_version: input.prompt_version,
+          input_hash: input.input_hash,
+          payload: input.payload,
+          feedback_memory: input.feedback_memory,
+          provider: input.provider,
+          model: input.model,
+          response_findings: input.response_findings,
+          response_format_mode: input.response_format_mode,
+          created_at: input.created_at,
+        }
+      : null,
+    future_training: {
+      eligible_sft: exportEligible(row, "sft"),
+      eligible_dpo: exportEligible(row, "dpo"),
+    },
+  });
+}
+
 async function main() {
   if (!process.env.DATABASE_URL) {
     console.error("DATABASE_URL is not configured — nothing to build.");
     process.exit(1);
   }
 
-  // Collect every approved row.
-  const rows: AdminFeedbackRow[] = [];
+  // Collect every durable rating. Approved rows become curated SFT/DPO data;
+  // every status remains in the provider-neutral ledger for future transforms.
+  const allRows: AdminFeedbackRow[] = [];
   let before: string | undefined;
   for (;;) {
-    const page = await listApprovedForExport({ limit: 500, before });
+    const page = await listFeedbackForLedger({ limit: 500, before });
     if (!page.length) break;
-    rows.push(...page);
+    allRows.push(...page);
     before = rowCursor(page[page.length - 1]);
     if (page.length < 500) break;
   }
+  const rows = allRows.filter((row) => row.review_status === "approved");
+  stats.feedbackRows = allRows.length;
   stats.approvedRows = rows.length;
 
   // Join inputs: linked id first, newest same-deck input as fallback.
-  const linked = await getAnalysisInputs(rows.flatMap((row) => (row.analysis_input_id ? [row.analysis_input_id] : [])));
+  const linked = await getAnalysisInputs(allRows.flatMap((row) => (row.analysis_input_id ? [row.analysis_input_id] : [])));
   const fallbackCache = new Map<string, AnalysisInputRow | null>();
   const inputFor = async (row: AdminFeedbackRow): Promise<AnalysisInputRow | null> => {
     if (row.analysis_input_id) {
@@ -140,6 +193,14 @@ async function main() {
     }
     return fallbackCache.get(key) ?? null;
   };
+
+  const ledger: string[] = [];
+  for (const row of allRows) {
+    const input = await inputFor(row);
+    if (!input) stats.ledgerMissingInput++;
+    ledger.push(feedbackLedgerRecord(row, input));
+  }
+  stats.ledgerRows = ledger.length;
 
   const sftTrain: string[] = [];
   const sftVal: string[] = [];
@@ -267,6 +328,7 @@ async function main() {
   write("dpo-train.jsonl", dpoTrain);
   write("dpo-val.jsonl", dpoVal);
   write("benchmark.jsonl", benchmark);
+  write("feedback-ledger.jsonl", ledger);
   writeFileSync(join(OUT_DIR, "stats.json"), `${JSON.stringify(stats, null, 2)}\n`);
 
   console.log(JSON.stringify(stats, null, 2));
@@ -276,7 +338,7 @@ async function main() {
   if (stats.dpoTrain < MIN_DPO) {
     console.warn(`warning: ${stats.dpoTrain} DPO pair(s) — below the ${MIN_DPO} floor for a useful run.`);
   }
-  console.log(`wrote ${OUT_DIR}/{sft-train,sft-val,dpo-train,dpo-val,benchmark}.jsonl and stats.json`);
+  console.log(`wrote ${OUT_DIR}/{feedback-ledger,sft-train,sft-val,dpo-train,dpo-val,benchmark}.jsonl and stats.json`);
 }
 
 main().catch((error) => {

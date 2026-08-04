@@ -202,11 +202,15 @@ task (text/image); task-scoped env vars always override it, and
 
 ### Managed fine-tuning (no self-hosted models)
 
-Once enough approved, corrected feedback exists (aim for 300–500 reviewed
-examples), `npm run dataset` joins it to the captured inputs and writes
-deck-disjoint `training-data/` JSONL: SFT chat examples, DPO preference pairs
-(corrected answer beats the AI's original), and a benchmark from the held-out
-split. `npm run train` uploads the files and drives a managed fine-tuning job
+`npm run dataset` always writes a provider-neutral
+`training-data/feedback-ledger.jsonl` containing every saved rating (pending,
+approved, and excluded), the available sanitized input, feedback/correction,
+and serving provenance. Keep it as future training evidence for OpenAI or any
+other provider; it is not uploaded automatically. Approved rows additionally
+produce deck-disjoint SFT chat examples, DPO preference pairs (corrected answer
+beats the AI's original), and a held-out benchmark. Once enough curated examples
+exist (aim for 300–500), `npm run train` uploads the provider-specific files and
+drives a managed fine-tuning job
 at the provider selected by `TRAINING_PROVIDER` — training runs on the
 provider's infrastructure and the result is a hosted model id, no GPU or VPS
 anywhere. `status` records the finished model as a registry *candidate*;

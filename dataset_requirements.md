@@ -7,7 +7,8 @@
   1. **SFT Dataset (`sft-train.jsonl`)**: Standard 3-role Chat format (`system`, `user`, `assistant`).
   2. **DPO Dataset (`dpo-train.jsonl`)**: Preference pair format (`input`, `preferred_output`, `non_preferred_output`).
   3. **Benchmark Dataset (`benchmark.jsonl`)**: Evaluation split for testing model accuracy before deployment.
-- **Content**: Plain text slide content + structured JSON correction outputs. Sensitive PPTX files and image pixels are excluded.
+  4. **Feedback Ledger (`feedback-ledger.jsonl`)**: Provider-neutral archive of every saved feedback event, its sanitized input when available, feedback/correction, review status, and model provenance.
+- **Content**: Plain text slide content + structured JSON correction outputs. Sensitive PPTX files and image pixels are excluded. The ledger is evidence for later transforms; only approved rows become SFT/DPO training data.
 
 ---
 
