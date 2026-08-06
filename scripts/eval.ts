@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { loadEnvLocal } from "./lib/env.mjs";
 import { askForFindings } from "../lib/ai/client";
 import { aiConfig, type AiConfig, type AiTask, type Provider } from "../lib/ai/config";
-import { promptVersionFor, TEXT_SYSTEM_PROMPT } from "../lib/ai/prompts";
+import { DECK_SYSTEM_PROMPT, promptVersionFor } from "../lib/ai/prompts";
 import { scoreCase, summarize, type CaseScore, type EvalCase } from "../lib/ai/evalScorers";
 import { feedbackLearningKey } from "../lib/feedback";
 import type { AiFinding } from "../lib/ai/schema";
@@ -68,7 +68,7 @@ console.log(`evaluating ${cfg.model} on ${cases.length} case(s) from ${caseFiles
 const learningKeyOf = (source: EvalCase["source"]) => (finding: AiFinding) =>
   feedbackLearningKey({
     source,
-    code: source === "ai-image" ? "ai.image" : "ai.text",
+    code: source === "ai-image" ? "ai.image" : source === "ai-deck" ? "ai.deck" : "ai.text",
     category: finding.category,
     title: finding.quote || finding.detail,
     detail: finding.detail,
@@ -82,11 +82,11 @@ let cursor = 0;
 const worker = async () => {
   while (cursor < cases.length) {
     const evalCase = cases[cursor++];
-    const framed = evalCase.input.slides.map((s) => `--- SLIDE ${s.n} ---\n${s.texts.join("\n")}`).join("\n\n");
+    const auditInput = JSON.stringify({ slides: evalCase.input.slides.map((slide) => ({ ...slide, shapes: [] })) });
     try {
       const result = await askForFindings(
-        TEXT_SYSTEM_PROMPT,
-        [{ type: "text", text: `Proofread this deck. ${evalCase.input.slides.length} slides.\n\n${framed}` }],
+        DECK_SYSTEM_PROMPT,
+        [{ type: "text", text: `Review this ${evalCase.input.slides.length}-slide proposal deck.\n\n${auditInput}` }],
         cfg,
       );
       const score = scoreCase(evalCase, { rawText: result.rawText, findings: result.findings }, learningKeyOf(evalCase.source));
@@ -106,7 +106,7 @@ const summary = summarize(scores);
 const results = {
   model: cfg.model,
   provider: cfg.provider,
-  promptVersion: promptVersionFor(task === "image" ? "ai-image" : "ai-text"),
+  promptVersion: promptVersionFor("ai-deck"),
   caseFiles,
   evaluatedAt: new Date().toISOString(),
   summary,

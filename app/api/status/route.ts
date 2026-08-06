@@ -24,6 +24,9 @@ export async function GET(request: Request) {
       image: await taskStatus("image"),
     },
     promptVersions: {
+      deck: promptVersionFor("ai-deck"),
+      deckImage: promptVersionFor("ai-deck-image"),
+      // Legacy routes remain available for prior captures and regression tests.
       text: promptVersionFor("ai-text"),
       image: promptVersionFor("ai-image"),
     },

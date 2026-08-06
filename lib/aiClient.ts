@@ -1,5 +1,6 @@
 "use client";
 
+import { deckAuditSlides } from "./ai/deckAudit";
 import type { AiFinding } from "./ai/schema";
 import { normQuote } from "./textNorm";
 import { px96, type Deck, type Finding, type PicShape } from "./types";
@@ -10,9 +11,14 @@ const MAX_EDGE = 1400;
 const JPEG_QUALITY = 0.85;
 
 let seq = 0;
-const toFinding = (f: AiFinding, source: "ai-text" | "ai-image", shapeIds?: string[]): Finding => ({
+const toFinding = (
+  f: AiFinding,
+  source: "ai-text" | "ai-image" | "ai-deck",
+  shapeIds?: string[],
+  analysisTask?: "deck" | "image",
+): Finding => ({
   id: `a${++seq}`,
-  code: source === "ai-image" ? "ai.image" : "ai.text",
+  code: source === "ai-image" ? "ai.image" : source === "ai-text" ? "ai.text" : "ai.deck",
   slide: f.slide,
   severity: f.severity,
   category: f.category,
@@ -21,7 +27,9 @@ const toFinding = (f: AiFinding, source: "ai-text" | "ai-image", shapeIds?: stri
   detail: f.detail,
   quote: f.quote,
   suggestion: f.suggestion,
-  shapeIds,
+  ...(shapeIds?.length || f.shapeIds?.length ? { shapeIds: shapeIds ?? f.shapeIds } : {}),
+  ...(f.relatedSlides?.length ? { relatedSlides: f.relatedSlides } : {}),
+  ...(analysisTask ? { analysisTask } : {}),
 });
 
 export function slideTexts(deck: Deck) {
@@ -95,6 +103,33 @@ export async function analyzeText(
       return (textByN.get(f.slide) ?? "").includes(normQuote(f.quote));
     })
     .map((f) => toFinding(f, "ai-text"));
+  const inputIds: Record<string, string> = {};
+  const inputId = json.analysisInput?.id;
+  if (inputId) for (const finding of findings) inputIds[finding.id] = inputId;
+  return { findings, provenance: toProvenance(json), inputIds };
+}
+
+/** Primary whole-deck Gemini pass: text, consistency, layout, and image metadata. */
+export async function analyzeDeck(
+  deck: Deck,
+  deckFingerprint?: string,
+  signal?: AbortSignal,
+): Promise<TextAnalysis> {
+  const slides = deckAuditSlides(deck);
+  if (!slides.length) return { findings: [], provenance: null, inputIds: {} };
+  const res = await fetch("/api/analyze-deck", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    signal,
+    body: JSON.stringify({ slides, ...(deckFingerprint ? { deckFingerprint } : {}) }),
+  });
+  const json = (await res.json()) as AnalyzeResponse;
+  if (json.error) throw new Error(json.error);
+
+  const textByN = new Map(slides.map((slide) => [slide.n, normQuote(slide.texts.join("\n"))]));
+  const findings = (json.findings ?? [])
+    .filter((finding) => !finding.quote?.trim() || (textByN.get(finding.slide) ?? "").includes(normQuote(finding.quote)))
+    .map((finding) => toFinding(finding, "ai-deck", undefined, "deck"));
   const inputIds: Record<string, string> = {};
   const inputId = json.analysisInput?.id;
   if (inputId) for (const finding of findings) inputIds[finding.id] = inputId;
@@ -184,7 +219,7 @@ export async function analyzeImages(
         // A typo inside a reused image exists on every slide that shows it.
         for (const f of json.findings ?? [])
           for (const use of job.uses) {
-            const finding = toFinding({ ...f, slide: use.slide }, "ai-image", [use.shapeId]);
+            const finding = toFinding({ ...f, slide: use.slide }, "ai-deck", [use.shapeId], "image");
             if (json.analysisInput?.id) inputIds[finding.id] = json.analysisInput.id;
             out.push(finding);
           }

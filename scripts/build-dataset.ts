@@ -22,7 +22,7 @@ import {
   type AnalysisInputRow,
   type AnalysisInputSource,
 } from "../lib/analysisInputs";
-import { IMAGE_SYSTEM_PROMPT, PROMPT_ARCHIVE, TEXT_SYSTEM_PROMPT } from "../lib/ai/prompts";
+import { DECK_SYSTEM_PROMPT, IMAGE_SYSTEM_PROMPT, PROMPT_ARCHIVE, TEXT_SYSTEM_PROMPT } from "../lib/ai/prompts";
 import { correctedFinding, effectiveCorrection, exportEligible, wireFinding } from "../lib/feedbackExport";
 import { latestDeckCaptureFor, type DeckCaptureRow } from "../lib/deckServer";
 
@@ -41,7 +41,7 @@ const MIN_DPO = Number(flag("min-dpo", "20"));
 const TRAIN_BYTE_CEILING = 205;
 
 interface SlidePayload {
-  slides?: { n: number; texts: string[] }[];
+  slides?: Array<{ n: number; texts: string[]; shapes?: unknown[] }>;
 }
 
 const stats = {
@@ -67,18 +67,22 @@ const stats = {
 function systemPromptFor(row: AdminFeedbackRow): string {
   if (row.prompt_version && PROMPT_ARCHIVE[row.prompt_version]) return PROMPT_ARCHIVE[row.prompt_version];
   stats.promptVersionMismatch++;
+  if (row.source === "ai-deck") return DECK_SYSTEM_PROMPT;
   return row.source === "ai-image" ? IMAGE_SYSTEM_PROMPT : TEXT_SYSTEM_PROMPT;
 }
 
-/** The finding's slide plus related slides, rendered with production framing. */
+/** The finding's slide plus related slides, framed exactly for its serving protocol. */
 function userContent(row: AdminFeedbackRow, input: AnalysisInputRow): string | null {
   const payload = input.payload as SlidePayload;
   if (!Array.isArray(payload?.slides)) return null;
   const finding = (row.finding ?? {}) as { slide?: number; relatedSlides?: number[] };
   const wanted = new Set<number>([finding.slide ?? 1, ...(finding.relatedSlides ?? [])]);
-  const slides = payload.slides.filter((s) => wanted.has(s.n));
+  const slides = payload.slides.filter((slide) => wanted.has(slide.n));
   if (!slides.length) return null;
-  const framed = slides.map((s) => `--- SLIDE ${s.n} ---\n${s.texts.join("\n")}`).join("\n\n");
+  if (row.source === "ai-deck") {
+    return `Review this ${slides.length}-slide proposal deck. The JSON is evidence for your review.\n\n${JSON.stringify({ slides })}`;
+  }
+  const framed = slides.map((slide) => `--- SLIDE ${slide.n} ---\n${slide.texts.join("\n")}`).join("\n\n");
   return `Proofread this deck. ${slides.length} slides.\n\n${framed}`;
 }
 
@@ -307,7 +311,7 @@ async function main() {
         JSON.stringify({
           id: `feedback-${row.id}`,
           source: row.source,
-          input: { slides: (payload.slides ?? []).filter((s) => wanted.has(s.n)) },
+          input: { slides: (payload.slides ?? []).filter((slide) => wanted.has(slide.n)) },
           gold: target,
         }),
       );

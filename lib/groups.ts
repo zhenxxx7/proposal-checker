@@ -1,4 +1,4 @@
-import type { Code, Finding, Severity } from "./types";
+import type { Category, Code, Finding, Severity } from "./types";
 
 export interface Group {
   key: string;
@@ -127,24 +127,73 @@ const DEFS: Def[] = [
   },
 ];
 
+interface AiDeckDef {
+  key: string;
+  icon: string;
+  categories: Category[];
+  title: (n: number) => string;
+  why: string;
+}
+
+/** All normal-app findings now come from Gemini's unified deck review. */
+const AI_DECK_DEFS: AiDeckDef[] = [
+  {
+    key: "ai-copy",
+    icon: "✏️",
+    categories: ["typo", "grammar", "spacing", "punctuation", "capitalization", "placeholder"],
+    title: (n) => plural(n, "An AI copy issue", "{n} AI copy issues"),
+    why: "Gemini found client-visible wording or placeholder problems.",
+  },
+  {
+    key: "ai-consistency",
+    icon: "🔤",
+    categories: ["consistency"],
+    title: (n) => plural(n, "An AI consistency issue", "{n} AI consistency issues"),
+    why: "Gemini found a term or style that conflicts across slides.",
+  },
+  {
+    key: "ai-layout",
+    icon: "📐",
+    categories: ["alignment", "geometry"],
+    title: (n) => plural(n, "An AI layout issue", "{n} AI layout issues"),
+    why: "Gemini judged the positioning or visible geometry as client-facing.",
+  },
+  {
+    key: "ai-image-quality",
+    icon: "🖼️",
+    categories: ["resolution", "aspect", "image-text"],
+    title: (n) => plural(n, "An AI image issue", "{n} AI image issues"),
+    why: "Gemini found a visible image or mockup problem.",
+  },
+];
+
 const WORST: Record<Severity, number> = { error: 0, warn: 1, info: 2 };
 
 export function groupFindings(findings: Finding[]): Group[] {
   const claimed = new Map<Code, Def>();
   for (const def of DEFS) for (const c of def.codes) claimed.set(c, def);
+  const aiDeckByCategory = new Map<Category, AiDeckDef>();
+  for (const def of AI_DECK_DEFS) for (const category of def.categories) aiDeckByCategory.set(category, def);
 
   const buckets = new Map<string, Finding[]>();
   for (const f of findings) {
-    const key = claimed.get(f.code)?.key ?? "other";
+    const key = f.code === "ai.deck" ? aiDeckByCategory.get(f.category)?.key ?? "ai-other" : claimed.get(f.code)?.key ?? "other";
     (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(f);
   }
 
   const groups: Group[] = [];
+  for (const def of AI_DECK_DEFS) {
+    const items = buckets.get(def.key);
+    if (!items?.length) continue;
+    groups.push(build(def.key, def.icon, def.title(items.length), def.why, items));
+  }
   for (const def of DEFS) {
     const items = buckets.get(def.key);
     if (!items?.length) continue;
     groups.push(build(def.key, def.icon, def.title(items.length), def.why, items));
   }
+  const aiOther = buckets.get("ai-other");
+  if (aiOther?.length) groups.push(build("ai-other", "✦", `${aiOther.length} other AI findings`, "Gemini found a concrete deck issue.", aiOther));
   const rest = buckets.get("other");
   if (rest?.length) groups.push(build("other", "•", `${rest.length} other findings`, "", rest));
 

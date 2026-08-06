@@ -26,6 +26,12 @@ const BANNER = {
     accent: "bg-emerald-500",
     glow: "from-emerald-500/10",
   },
+  unavailable: {
+    title: "AI review incomplete",
+    body: "Do not use this page as a delivery verdict until Gemini finishes every deck review pass.",
+    accent: "bg-zinc-500",
+    glow: "from-zinc-500/10",
+  },
 } as const;
 
 const LABEL: Record<Severity, string> = { error: "Must fix", warn: "Should check", info: "Minor" };
@@ -38,6 +44,7 @@ export function Summary({
   onOpen,
   feedback,
   onFeedback,
+  analysisComplete,
 }: {
   /** the whole deck — the verdict must not change when the user searches */
   all: Finding[];
@@ -48,8 +55,10 @@ export function Summary({
   onOpen: (f: Finding) => void;
   feedback: FeedbackSelections;
   onFeedback: (finding: Finding, rating: FeedbackRating) => void;
+  /** Only a complete Gemini run can produce a send/no-send verdict. */
+  analysisComplete: boolean;
 }) {
-  const state = readiness(all);
+  const state = analysisComplete ? readiness(all) : "unavailable";
   const b = BANNER[state];
   const counts: Record<Severity, number> = {
     error: all.filter((f) => f.severity === "error").length,

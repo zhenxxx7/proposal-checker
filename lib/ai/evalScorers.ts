@@ -10,7 +10,7 @@ import { AI_CATEGORIES, SEVERITIES, type AiFinding } from "./schema";
 
 export interface EvalCase {
   id: string;
-  source: "ai-text" | "ai-image";
+  source: "ai-text" | "ai-image" | "ai-deck";
   input: { slides: { n: number; texts: string[] }[] };
   gold: { findings: AiFinding[] };
   /** Learning keys of known false-positive patterns for this deck. */
@@ -57,8 +57,8 @@ const SEVERITY_SET = new Set<string>(SEVERITIES);
 const CATEGORY_SET = new Set<string>(AI_CATEGORIES);
 
 /**
- * Strict schema validation of the RAW model text: exact root shape, exactly
- * the six fields, enum membership, integer slide >= 1, non-empty detail.
+ * Strict schema validation of RAW model text: exact root shape, known fields,
+ * enum membership, integer slide >= 1, and non-empty detail.
  * The production path repairs; the eval (and grader) must reject instead.
  */
 export function strictValidateFindings(rawText: string): boolean {
@@ -76,8 +76,10 @@ export function strictValidateFindings(rawText: string): boolean {
   return findings.every((item) => {
     if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
     const o = item as Record<string, unknown>;
-    const fields = Object.keys(o).sort();
-    if (fields.join(",") !== "category,detail,quote,severity,slide,suggestion") return false;
+    const fields = Object.keys(o);
+    const required = ["slide", "severity", "category", "quote", "suggestion", "detail"];
+    const allowed = new Set([...required, "shapeIds", "relatedSlides"]);
+    if (!required.every((field) => fields.includes(field)) || fields.some((field) => !allowed.has(field))) return false;
     return (
       Number.isInteger(o.slide) &&
       (o.slide as number) >= 1 &&
@@ -88,7 +90,9 @@ export function strictValidateFindings(rawText: string): boolean {
       typeof o.quote === "string" &&
       typeof o.suggestion === "string" &&
       typeof o.detail === "string" &&
-      o.detail.trim().length > 0
+      o.detail.trim().length > 0 &&
+      (o.shapeIds === undefined || (Array.isArray(o.shapeIds) && o.shapeIds.every((id) => typeof id === "string"))) &&
+      (o.relatedSlides === undefined || (Array.isArray(o.relatedSlides) && o.relatedSlides.every((slide) => Number.isInteger(slide) && (slide as number) > 0)))
     );
   });
 }

@@ -179,7 +179,8 @@ expect((await page.$$("[data-finding]")).length > 0, "top group is expanded on a
 await (await page.$("[data-finding]")).click();
 await wait(800);
 expect((await page.$$("[data-stage]")).length === 1, "switched to slides view");
-expect((await page.$$("[data-stage] [data-finding-marker]")).length >= 1, "finding marker shown without raising the shape");
+expect((await page.$$('[data-stage] [data-finding-marker]')).length >= 1, "finding marker shown without raising the shape");
+expect((await page.$$('[data-feedback-rating]')).length >= 1, "Slides view exposes AI feedback for its Gemini finding");
 await page.screenshot({ path: "scripts/__slides.png" });
 
 console.log("\n6. Slide rail thumbnails render lazily");
@@ -253,15 +254,15 @@ if (status.configured) {
   await wait(800);
 
   const afterAi = await cardTitles();
-  const aiGroups = afterAi.filter((t) => /mockup image|proofreading note/i.test(t));
+  const aiGroups = afterAi.filter((t) => /AI image|AI copy/i.test(t));
   expect(aiGroups.length >= 1, `AI groups appeared: ${aiGroups.join(" | ") || "none"}`);
 
   // Open the group only when it is collapsed; it can already be the top group.
-  await page.$eval("[data-group='in-image']", (group) => {
+  await page.$eval("[data-group='ai-image-quality']", (group) => {
     if (!group.querySelector("[data-finding]")) group.querySelector("button")?.click();
   });
   await wait(400);
-  const shown = await page.$eval("[data-group='in-image']", (e) => e.innerText);
+  const shown = await page.$eval("[data-group='ai-image-quality']", (e) => e.innerText);
   expect(shown.includes("Submitt"), "in-image typo 'Submitt' rendered");
   expect(shown.includes("Submit"), "suggested fix 'Submit' rendered");
   expect(/slide \d+/.test(shown), "in-image finding is attributed to a slide");
@@ -271,13 +272,13 @@ if (status.configured) {
 
   console.log("\n11. AI feedback stays structured and synchronized");
   expect((await page.$$("[data-finding] textarea")).length === 0, "AI feedback has no free-text field");
-  const rating = await page.$("[data-group='in-image'] [data-feedback-rating]");
+  const rating = await page.$("[data-group='ai-image-quality'] [data-feedback-rating]");
   expect(!!rating, "AI finding exposes the usefulness dropdown");
   if (!rating) throw new Error("AI usefulness dropdown was not rendered.");
   await rating.select("not-useful");
   await page.waitForFunction(
     () => {
-      const select = document.querySelector("[data-group='in-image'] [data-feedback-rating]");
+      const select = document.querySelector("[data-group='ai-image-quality'] [data-feedback-rating]");
       const status = select?.closest("[data-finding]")?.querySelector("[data-feedback-status]");
       return select?.value === "not-useful" && status?.getAttribute("data-feedback-status") !== "syncing";
     },
@@ -304,19 +305,19 @@ if (status.configured) {
   expect(feedbackPolicyRequests >= 1, "AI run checks the shared feedback policy route");
 
   console.log("\n11b. Correction details create one more structured write");
-  const detailsToggle = await page.$("[data-group='in-image'] [data-feedback-details-toggle]");
+  const detailsToggle = await page.$("[data-group='ai-image-quality'] [data-feedback-details-toggle]");
   expect(!!detailsToggle, "details toggle appears after a rating");
   if (!detailsToggle) throw new Error("Feedback details toggle was not rendered.");
   await detailsToggle.click();
-  const correctionField = await page.$("[data-group='in-image'] [data-feedback-correction]");
+  const correctionField = await page.$("[data-group='ai-image-quality'] [data-feedback-correction]");
   expect(!!correctionField, "correction textarea appears when details are expanded");
   if (!correctionField) throw new Error("Correction textarea was not rendered.");
   await correctionField.type("Submit");
-  await page.type("[data-group='in-image'] [data-feedback-reason]", "Button label is a typo.");
-  await page.click("[data-group='in-image'] [data-feedback-details-save]");
+  await page.type("[data-group='ai-image-quality'] [data-feedback-reason]", "Button label is a typo.");
+  await page.click("[data-group='ai-image-quality'] [data-feedback-details-save]");
   await page.waitForFunction(
     () => {
-      const select = document.querySelector("[data-group='in-image'] [data-feedback-rating]");
+      const select = document.querySelector("[data-group='ai-image-quality'] [data-feedback-rating]");
       const status = select?.closest("[data-finding]")?.querySelector("[data-feedback-status]");
       return status?.getAttribute("data-feedback-status") !== "syncing";
     },

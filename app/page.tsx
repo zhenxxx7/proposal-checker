@@ -7,10 +7,9 @@ import { SlidePreview } from "@/components/SlidePreview";
 import { SlideRail, countBySlide } from "@/components/SlideRail";
 import { Summary } from "@/components/Summary";
 import { Button, Card, SearchInput, Tabs, ThemeToggle } from "@/components/ui";
-import { analyzeImages, analyzeText, selectImageJobs, type AnalysisProvenance } from "@/lib/aiClient";
+import { analyzeDeck, analyzeImages, selectImageJobs, type AnalysisProvenance } from "@/lib/aiClient";
 import { createDeckCaptureRecord, storeDeckCapture, type DeckSourceInfo } from "@/lib/deckClient";
 import { collectFamilies, googleFontsUrl } from "@/lib/fonts";
-import { runRuleChecks } from "@/lib/checks";
 import {
   applyFeedbackLearning,
   applySharedFeedbackPolicy,
@@ -77,9 +76,9 @@ export default function Page() {
   // Latest submitted rating per finding, so a slow shared write that loses a
   // race against a newer click cannot store its stale record locally.
   const pendingRatings = useRef(new Map<string, FeedbackRating>());
-  // Which model/prompt actually produced the current findings, per AI pass.
-  const provenanceRef = useRef<{ text: AnalysisProvenance | null; image: AnalysisProvenance | null }>({
-    text: null,
+  // Which model/prompt actually produced the current finding, per Gemini pass.
+  const provenanceRef = useRef<{ deck: AnalysisProvenance | null; image: AnalysisProvenance | null }>({
+    deck: null,
     image: null,
   });
   // Captured analysis-input id per finding id (image findings map per image).
@@ -116,13 +115,10 @@ export default function Page() {
   const runCombined = useCallback(async (
     targetDeck: Deck,
     jobs: ReturnType<typeof selectImageJobs>,
-    includeRules: boolean,
     deckName: string,
   ) => {
     if (analysisRunning.current) return;
     analysisRunning.current = true;
-    // Freeze the local policy for this run so changing a rating mid-analysis
-    // cannot produce a half-old, half-new result.
     const learningRecords = loadStoredFeedbackRecords();
     const deckIdentity = createFeedbackDeckIdentity(deckName, targetDeck);
     const controller = new AbortController();
@@ -131,63 +127,43 @@ export default function Page() {
     setError(null);
     setAiDone(false);
 
-    const total = jobs.length + 1 + (includeRules ? 1 : 0);
-    let localDone = 0;
-    let textDone = 0;
+    const total = jobs.length + 1;
+    let deckDone = 0;
     let imagesDone = 0;
-    const report = (label: string) =>
-      setProgress({ done: localDone + textDone + imagesDone, total, label });
-
-    report(includeRules ? "Running local and AI checks..." : "Re-running AI checks...");
+    const report = (label: string) => setProgress({ done: deckDone + imagesDone, total, label });
+    report("Gemini is reviewing the deck...");
 
     try {
-      // Start remote text and vision work first. Local rules run while those
-      // requests are already in flight.
-      const textPromise = analyzeText(targetDeck, deckIdentity.fingerprint, controller.signal).then((result) => {
-        textDone = 1;
-        report("Analyzing deck...");
+      const deckPromise = analyzeDeck(targetDeck, deckIdentity.fingerprint, controller.signal).then((result) => {
+        deckDone = 1;
+        report("Gemini is reviewing slide images...");
         return result;
       });
       const imagesPromise = analyzeImages(
         jobs,
         (done) => {
           imagesDone = done;
-          report("Analyzing deck...");
+          report("Gemini is reviewing slide images...");
         },
         2,
         controller.signal,
         deckIdentity.fingerprint,
       );
-      const localPromise = includeRules
-        ? Promise.resolve().then(() => {
-            const result = runRuleChecks(targetDeck);
-            localDone = 1;
-            report("Analyzing deck...");
-            return result;
-          })
-        : Promise.resolve<Finding[] | null>(null);
 
-      const [localResult, textResult, imageResult] = await Promise.allSettled([
-        localPromise,
-        textPromise,
-        imagesPromise,
-      ]);
+      const [deckResult, imageResult] = await Promise.allSettled([deckPromise, imagesPromise]);
       const combined = [
-        ...(textResult.status === "fulfilled" ? textResult.value.findings : []),
+        ...(deckResult.status === "fulfilled" ? deckResult.value.findings : []),
         ...(imageResult.status === "fulfilled" ? imageResult.value.findings : []),
       ];
       rawAiFindings.current = combined;
       provenanceRef.current = {
-        text: textResult.status === "fulfilled" ? textResult.value.provenance : null,
+        deck: deckResult.status === "fulfilled" ? deckResult.value.provenance : null,
         image: imageResult.status === "fulfilled" ? imageResult.value.provenance : null,
       };
       inputIdsRef.current = {
-        ...(textResult.status === "fulfilled" ? textResult.value.inputIds : {}),
+        ...(deckResult.status === "fulfilled" ? deckResult.value.inputIds : {}),
         ...(imageResult.status === "fulfilled" ? imageResult.value.inputIds : {}),
       };
-      // The policy lookup happens before the one combined result is revealed.
-      // If Neon has not been provisioned yet, browser-only learning remains the
-      // fallback and the existing one-wait experience remains intact.
       const sharedPolicy = await resolveSharedFeedbackPolicy(deckIdentity, combined, controller.signal);
       const learned = sharedPolicy.configured
         ? applySharedFeedbackPolicy(combined, sharedPolicy.suppressedLearningKeys)
@@ -203,25 +179,19 @@ export default function Page() {
           return next;
         });
       }
-      const initialRules = localResult.status === "fulfilled" ? localResult.value : null;
-      setFindings((current) => [
-        ...(initialRules ?? current.filter((finding) => finding.source === "rule")),
-        ...learned.findings,
-      ]);
+      setFindings(learned.findings);
 
-      const failure = localResult.status === "rejected"
-        ? localResult.reason
-        : textResult.status === "rejected"
-          ? textResult.reason
-          : imageResult.status === "rejected"
-            ? imageResult.reason
-            : null;
+      const failure = deckResult.status === "rejected"
+        ? deckResult.reason
+        : imageResult.status === "rejected"
+          ? imageResult.reason
+          : null;
       if (failure && !controller.signal.aborted) {
-        setError(failure instanceof Error ? failure.message : "Analysis partly failed.");
+        setError(failure instanceof Error ? failure.message : "Gemini analysis partly failed.");
       }
       if (!failure && !controller.signal.aborted) setAiDone(true);
     } catch (e) {
-      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "AI check failed.");
+      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Gemini analysis failed.");
     } finally {
       analysisRunning.current = false;
       setAbort(null);
@@ -272,11 +242,12 @@ export default function Page() {
       setView("summary");
 
       if (providerStatus.configured) {
-        await runCombined(parsed, selectImageJobs(parsed), true, name);
+        await runCombined(parsed, selectImageJobs(parsed), name);
       } else {
         rawAiFindings.current = [];
         setLearnedSkipped(0);
-        setFindings(runRuleChecks(parsed));
+        setFindings([]);
+        setError("Gemini audit needs an AI key. No delivery verdict is available without AI analysis.");
       }
 
       // Reveal deck only after combined result is ready. This keeps upload,
@@ -307,7 +278,7 @@ export default function Page() {
   const imageJobs = useMemo(() => (deck ? selectImageJobs(deck) : []), [deck]);
   const rerunAi = useCallback(() => {
     if (deck && !analysisRunning.current) {
-      void runCombined(deck, imageJobs, false, fileName).finally(() => setPhase("ready"));
+      void runCombined(deck, imageJobs, fileName).finally(() => setPhase("ready"));
     }
   }, [deck, fileName, imageJobs, runCombined]);
 
@@ -348,7 +319,7 @@ export default function Page() {
     const deckIdentity = createFeedbackDeckIdentity(fileName, deck);
     // Provenance from the run that produced this finding beats the status
     // endpoint, which may already reflect a different (redeployed) model.
-    const provenance = finding.source === "ai-text" ? provenanceRef.current.text : provenanceRef.current.image;
+    const provenance = finding.analysisTask === "image" ? provenanceRef.current.image : provenanceRef.current.deck;
     const record = createFeedbackRecord({
       finding,
       rating,
@@ -359,6 +330,7 @@ export default function Page() {
       model: provenance?.model ?? status?.model,
       promptVersion: provenance?.promptVersion,
       analysisInputId: inputIdsRef.current[finding.id] ?? provenance?.analysisInputId,
+      analysisTask: finding.analysisTask,
       correction: details?.correction,
       reason: details?.reason,
     });
@@ -400,10 +372,7 @@ export default function Page() {
     setFeedback({});
     setLearnedSkipped(0);
     setLearningMode(null);
-    setFindings((currentFindings) => [
-      ...currentFindings.filter((finding) => finding.source === "rule"),
-      ...rawAiFindings.current,
-    ]);
+    setFindings(rawAiFindings.current);
   }, []);
 
   // ←/→ to walk slides while in the slide view.
@@ -545,6 +514,7 @@ export default function Page() {
             query={query}
             feedback={feedback}
             onFeedback={submitFeedback}
+            analysisComplete={aiDone}
             onOpen={openFinding}
           />
         )}

@@ -13,15 +13,17 @@ import { purgeDeckCaptures } from "./deckServer";
  */
 
 const TABLE = "proposal_checker_analysis_inputs";
-const MAX_PAYLOAD_CHARS = 200_000;
+// Compact deck geometry is needed to reconstruct approved layout examples;
+// preview pixels remain excluded, so this stays far below raw-PPTX storage.
+const MAX_PAYLOAD_CHARS = 500_000;
 
-export type AnalysisInputSource = "ai-text" | "ai-image";
+export type AnalysisInputSource = "ai-text" | "ai-image" | "ai-deck";
 
 export interface AnalysisInputCapture {
   deckFingerprint: string;
   source: AnalysisInputSource;
   promptVersion: string;
-  /** ai-text: the exact {slides} block sent to the model; ai-image: metadata only, never bytes. */
+  /** ai-text/ai-deck: sanitized structured input; ai-image: metadata only, never pixels. */
   payload: unknown;
   /** Feedback-memory examples that conditioned this response, if any. */
   feedbackMemory: unknown;
@@ -57,7 +59,7 @@ async function ensureSchema(): Promise<void> {
       CREATE TABLE IF NOT EXISTS ${TABLE} (
         id TEXT PRIMARY KEY,
         deck_fingerprint TEXT NOT NULL,
-        source TEXT NOT NULL CHECK (source IN ('ai-text', 'ai-image')),
+        source TEXT NOT NULL CHECK (source IN ('ai-text', 'ai-image', 'ai-deck')),
         prompt_version TEXT NOT NULL,
         input_hash TEXT NOT NULL,
         payload JSONB NOT NULL,
@@ -70,6 +72,17 @@ async function ensureSchema(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         expires_at TIMESTAMPTZ
       )
+    `);
+    // Existing Neon tables were created before ai-deck existed. Rebuild the
+    // generated source constraint additively; no rows or captured inputs change.
+    await db.query(`
+      ALTER TABLE ${TABLE}
+      DROP CONSTRAINT IF EXISTS proposal_checker_analysis_inputs_source_check
+    `);
+    await db.query(`
+      ALTER TABLE ${TABLE}
+      ADD CONSTRAINT proposal_checker_analysis_inputs_source_check
+      CHECK (source IN ('ai-text', 'ai-image', 'ai-deck'))
     `);
     await db.query(`
       CREATE INDEX IF NOT EXISTS pc_analysis_inputs_deck_idx

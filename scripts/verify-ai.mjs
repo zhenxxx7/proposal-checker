@@ -31,7 +31,38 @@ const status = await (await fetch(`${base}/api/status`)).json();
 console.log(`  info  provider=${status.label} model=${status.model} configured=${status.configured}`);
 expect(status.configured === true, "provider is configured");
 
-console.log("\n2. /api/analyze-text");
+console.log("\n2. /api/analyze-deck (primary Gemini audit)");
+const deck = await post("/api/analyze-deck", {
+  slides: [
+    {
+      n: 1,
+      texts: ["Welcome to the deck"],
+      shapes: [{ id: "title-1", kind: "text", bounds: { x: 0.1, y: 0.1, w: 0.6, h: 0.1 } }],
+    },
+    {
+      n: 3,
+      texts: ["We will recieve the files next week."],
+      shapes: [{ id: "body-3", kind: "text", bounds: { x: 0.1, y: 0.2, w: 0.7, h: 0.2 } }],
+    },
+  ],
+});
+expect(deck.status === 200, `HTTP ${deck.status}${deck.json.error ? ` — ${deck.json.error}` : ""}`);
+expect(Array.isArray(deck.json.findings), "returns a primary findings array");
+expect(typeof deck.json.feedbackMemory?.applied === "number", "reports feedback examples sent to deck prompt");
+expect(deck.json.findings.length === 1, `junk entry dropped by coercer (${deck.json.findings.length} kept)`);
+const d = deck.json.findings[0];
+expect(
+  d?.quote === "recieve" && d?.suggestion === "receive",
+  `deck audit grounds text: ${JSON.stringify(d?.quote)} -> ${JSON.stringify(d?.suggestion)}`,
+);
+expect(d?.slide === 3, `deck audit preserves slide (${d?.slide})`);
+expect(
+  typeof deck.json.promptVersion === "string" && deck.json.promptVersion.startsWith("pdeck-"),
+  `deck response carries its prompt version (${deck.json.promptVersion})`,
+);
+expect(deck.json.model?.name === status.model, `deck response reports serving model (${deck.json.model?.name})`);
+
+console.log("\n3. /api/analyze-text (legacy compatibility)");
 const text = await post("/api/analyze-text", {
   slides: [
     { n: 1, texts: ["Welcome to the deck"] },
@@ -54,7 +85,7 @@ expect(
 );
 expect(text.json.model?.name === status.model, `text response reports the serving model (${text.json.model?.name})`);
 
-console.log("\n3. /api/analyze-image  (first call is rate-limited by the mock)");
+console.log("\n4. /api/analyze-image  (part of unified deck audit; first call is rate-limited by mock)");
 let img;
 for (let i = 1; i <= 3; i++) {
   img = await post("/api/analyze-image", {
@@ -74,7 +105,7 @@ expect(f?.severity === "warn", `bogus severity "SEVERE" coerced to "${f?.severit
 expect(f?.slide === 7, `slide forced to the caller's value (${f?.slide})`);
 expect(f?.category === "image-text", `category forced to image-text`);
 expect(
-  typeof img.json.promptVersion === "string" && img.json.promptVersion.startsWith("pimg-"),
+  typeof img.json.promptVersion === "string" && img.json.promptVersion.startsWith("pdeckimg-"),
   `image response carries its prompt version (${img.json.promptVersion})`,
 );
 expect(!!img.json.model?.name, `image response reports the serving model (${img.json.model?.name})`);

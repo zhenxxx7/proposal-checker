@@ -1,4 +1,4 @@
-import { IMAGE_SYSTEM_PROMPT, PROMPT_ARCHIVE, TEXT_SYSTEM_PROMPT } from "./ai/prompts";
+import { DECK_SYSTEM_PROMPT, IMAGE_SYSTEM_PROMPT, PROMPT_ARCHIVE, TEXT_SYSTEM_PROMPT } from "./ai/prompts";
 import type { AdminFeedbackRow } from "./adminServer";
 
 /**
@@ -41,6 +41,8 @@ export interface WireFinding {
   quote: string;
   suggestion: string;
   detail: string;
+  shapeIds?: string[];
+  relatedSlides?: number[];
 }
 
 /** Project the stored finding back onto the model's production output shape. */
@@ -53,6 +55,12 @@ export function wireFinding(row: AdminFeedbackRow): WireFinding {
     quote: typeof finding.quote === "string" ? finding.quote : "",
     suggestion: typeof finding.suggestion === "string" ? finding.suggestion : "",
     detail: typeof finding.detail === "string" ? finding.detail : "",
+    ...(Array.isArray(finding.shapeIds) && finding.shapeIds.every((id) => typeof id === "string")
+      ? { shapeIds: finding.shapeIds }
+      : {}),
+    ...(Array.isArray(finding.relatedSlides) && finding.relatedSlides.every((slide) => Number.isInteger(slide))
+      ? { relatedSlides: finding.relatedSlides }
+      : {}),
   };
 }
 
@@ -64,6 +72,7 @@ export function correctedFinding(row: AdminFeedbackRow): WireFinding {
 
 function systemPromptFor(row: AdminFeedbackRow): string {
   if (row.prompt_version && PROMPT_ARCHIVE[row.prompt_version]) return PROMPT_ARCHIVE[row.prompt_version];
+  if (row.source === "ai-deck") return DECK_SYSTEM_PROMPT;
   return row.source === "ai-image" ? IMAGE_SYSTEM_PROMPT : TEXT_SYSTEM_PROMPT;
 }
 

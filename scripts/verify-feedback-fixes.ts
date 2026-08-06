@@ -585,7 +585,10 @@ function verifyRecordFieldsAndPromptVersions() {
   assert.equal(promptVersionFor("ai-text"), promptVersionFor("ai-text"), "prompt version is deterministic");
   assert.match(promptVersionFor("ai-text"), /^ptext-[a-f0-9]{12}$/, "text prompt version is a content hash");
   assert.match(promptVersionFor("ai-image"), /^pimg-[a-f0-9]{12}$/, "image prompt version is a content hash");
-  assert.notEqual(promptVersionFor("ai-text"), promptVersionFor("ai-image"), "each pass has its own version");
+  assert.match(promptVersionFor("ai-deck"), /^pdeck-[a-f0-9]{12}$/, "primary deck prompt version is a content hash");
+  assert.match(promptVersionFor("ai-deck-image"), /^pdeckimg-[a-f0-9]{12}$/, "primary image prompt version is a content hash");
+  assert.notEqual(promptVersionFor("ai-deck"), promptVersionFor("ai-deck-image"), "deck and image passes keep distinct provenance");
+  assert.notEqual(promptVersionFor("ai-text"), promptVersionFor("ai-image"), "legacy passes keep their own versions");
   assert.ok(isArchivedPromptVersion(promptVersionFor("ai-text")), "the current text prompt is archived");
   assert.ok(!isArchivedPromptVersion("ptext-000000000000"), "unknown versions are not archived");
   assert.ok(
@@ -641,6 +644,31 @@ function verifyRecordFieldsAndPromptVersions() {
     isFeedbackRecord({ ...record, correction: undefined, reason: undefined }),
     "details stay optional for old clients",
   );
+
+  const aiDeckFinding = {
+    id: "a2",
+    code: "ai.deck",
+    slide: 2,
+    severity: "warn",
+    category: "alignment",
+    source: "ai-deck",
+    analysisTask: "deck",
+    title: "Misaligned images",
+    detail: "Two product images sit visibly off the shared left edge.",
+    suggestion: "Align both images to the same left edge.",
+    shapeIds: ["image-1", "image-2"],
+  } as Finding & { source: "ai-deck" };
+  const deckRecord = createFeedbackRecord({
+    finding: aiDeckFinding,
+    rating: "useful",
+    deckName: "Deck.pptx",
+    deckFingerprint: "deck-v1-0123456789abcdef",
+    slideCount: 3,
+    promptVersion: promptVersionFor("ai-deck"),
+    analysisTask: "deck",
+  });
+  assert.ok(isFeedbackRecord(deckRecord), "unified ai-deck feedback stays valid training evidence");
+  assert.equal(deckRecord.finding.analysisTask, "deck", "unified feedback records the generating Gemini pass");
 }
 
 function verifyAdminTokens() {

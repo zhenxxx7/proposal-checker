@@ -17,7 +17,7 @@ export type Category =
   | "geometry"
   | "image-text";
 
-export type Source = "rule" | "ai-text" | "ai-image";
+export type Source = "rule" | "ai-text" | "ai-image" | "ai-deck";
 
 /** Stable identifier for the rule that fired. Findings are grouped by this. */
 export type Code =
@@ -47,7 +47,8 @@ export type Code =
   | "geo.pic-offslide"
   | "slide.duplicate"
   | "ai.text"
-  | "ai.image";
+  | "ai.image"
+  | "ai.deck";
 
 export interface Finding {
   id: string;
@@ -66,6 +67,8 @@ export interface Finding {
   shapeIds?: string[];
   /** other slides involved (consistency findings) */
   relatedSlides?: number[];
+  /** Which Gemini pass produced this unified AI finding. */
+  analysisTask?: "deck" | "image";
 }
 
 export interface Rect {

@@ -11,18 +11,26 @@ Built for checking client proposals before they are submitted.
 
 ## One combined analysis
 
-The `.pptx` is unzipped and parsed *in your browser*. After parsing, local rule
-checks and AI text/image checks start together. Results stay behind one progress
-screen until every branch settles, then appear once as one merged result set.
-One upload, one wait, no second analysis click.
+The `.pptx` is unzipped and parsed *in your browser*. After parsing, Gemini runs
+one primary deck audit over extracted text and compact shape/layout evidence,
+while a Gemini vision pass reviews qualifying mockup images. Gemini decides every
+finding shown in the normal report. Results stay behind one progress screen until
+every branch settles, then appear once as one merged AI result set.
 
-When no AI provider is configured, the same flow finishes with local rules only.
-Local `.pptx` files never leave the browser; AI receives only extracted text and
-downscaled copies of qualifying mockup images.
+Without an AI provider, the app shows **no delivery verdict**. Local deterministic
+checks remain available only as a separate CLI diagnostic; they never appear in
+the normal report. Local `.pptx` files never leave the browser; Gemini receives
+sanitized slide text, compact geometry/media metadata, and downscaled qualifying
+mockup images.
 
 ---
 
 ## What it catches
+
+### Gemini review scope
+Gemini uses the parsed slide text, structured layout evidence, and mockup-image
+vision to decide whether an issue is real. The dimensions below are evidence for
+Gemini's judgement, not deterministic findings rendered directly to users.
 
 ### Text
 | Check | Severity |
@@ -95,22 +103,19 @@ them** — "6 images will look blurry (slide 79, 82, 83, 85, 86)" rather than si
 rows. Blocking groups start expanded. Click any finding to jump to its slide.
 
 **Slides** is the drill-down. A lazy-rendered thumbnail rail (only ~7 of 93 previews mount
-at a time), the reconstructed slide, and the findings on it. Clicking a finding outlines
-the exact shape. `←` / `→` walk the deck.
+at a time), the reconstructed slide, and Gemini findings on it. Clicking a finding outlines
+the supplied shape anchor. `←` / `→` walk the deck.
 
-Search filters the list; it never changes the verdict or the counters. Every fix
-suggestion has a one-click **copy**. Light and dark themes, remembered. When a provider
-is configured, local rules plus AI text and vision checks run as one automatic analysis;
-the button only re-runs AI, and disables itself with a reason when no provider is set.
-AI findings also carry a **Useful / Not useful** dropdown. An optional **Add comment**
-toggle records context alongside the rating. The latest choice is saved in that
-browser and appears consistently in Summary and Slides; rule findings have no
-feedback control. On the next AI run, findings that match the
-latest normalized pattern marked **Not useful** are hidden for the same deck.
-Cross-deck suppression is deliberately conservative: at least two distinct
-decks must agree and at least 80% of their latest ratings must be **Not useful**.
-A visible notice shows how many were skipped and can reset all locally learned
-choices without another AI request.
+Search filters the list; it never changes the verdict or counters. Every fix
+suggestion has a one-click **copy**. Light and dark themes, remembered. Gemini
+audits every normal-app finding: text, consistency, layout, image quality, and
+mockup copy. Therefore **every displayed finding** carries a **Useful / Not useful**
+dropdown and optional **Add comment** in both Summary and Slides. Ratings retain
+the exact Gemini pass/prompt/input provenance for future training. The latest
+**Not useful** choice suppresses a matching finding on the same deck next run.
+Cross-deck suppression remains conservative: at least two distinct decks must
+agree and at least 80% of latest ratings must be **Not useful**. A visible notice
+shows skipped findings and can reset locally learned choices without an AI request.
 
 An AI run on an image-heavy deck is 60–100 requests, so it is **cancellable** — stopping
 keeps every finding collected up to that point.
@@ -149,22 +154,20 @@ cp .env.example .env.local
 # AI_API_KEY=...            # https://aistudio.google.com/apikey
 ```
 
-Without a database, feedback learning is deterministic application-level
-learning: it stays in that browser, is removed when browser storage is cleared,
-and never changes Gemini model weights. When `DATABASE_URL` is supplied by a
-Vercel-managed Neon project, each explicit **Useful / Not useful** choice is
-also saved as shared memory. On the next run it is used twice: server retrieves
-a short set of matching reviewer-rated patterns and adds them to Gemini's system
-instruction, then app applies same policy before results show. Same-deck choices
-apply on next run; cross-deck prompt guidance needs two decks and 80% agreement.
-App still falls back to browser-local learning if Neon is unavailable.
+Without a database, feedback learning stays in that browser, is removed when
+browser storage is cleared, and never changes Gemini model weights. With
+`DATABASE_URL`, every explicit **Useful / Not useful** choice for every displayed
+Gemini finding is stored as shared memory. On the next run the server retrieves a
+small set of matching reviewer-rated patterns and appends it as calibration data
+to the relevant Gemini deck or image prompt. Same-deck choices apply next run;
+cross-deck prompt guidance needs two decks and 80% agreement. App falls back to
+browser-local learning if Neon is unavailable.
 
-Shared memory stores the rated AI finding (quote, suggested correction, and
-metadata), its content fingerprint, and model name. It does **not** store the
-uploaded `.pptx`, slide preview images, or raw image data. Gemini receives only
-small retrieved calibration examples relevant to current text/image pass, never
-whole feedback database. This is retrieval-augmented, RLHF-like feedback
-learning, not continuous RLHF or Gemini weight training.
+Shared memory stores rated Gemini findings, corrections, compact anchors, model,
+and prompt provenance. It does **not** store uploaded `.pptx` files, rendered
+slide previews, or raw image data. Gemini receives only small relevant calibration
+examples, never the whole feedback database. This is retrieval-augmented feedback
+memory, not RLHF, continuous learning, or Gemini weight training.
 
 Write protection: the feedback and AI analyze routes only accept requests that
 identify as same-origin browser traffic (`Origin` or `Sec-Fetch-Site` header),
@@ -182,11 +185,12 @@ Without `DATABASE_URL`, nothing durable stores deck content — feedback stays
 in browser `localStorage`. With Neon, every successful upload/import stores a
 sanitized deck event (name, source, Google URL when applicable, extracted slide
 text, and lightweight media metadata) for the data portal and tuning. Setting
-`TRAINING_CAPTURE=true` additionally stores the exact model input and response
-provenance (for images a content hash and context line, never pixels) so
-approved feedback can be reconstructed into SFT/DPO training pairs. These
-explicit analysis captures expire after `TRAINING_CAPTURE_TTL_DAYS` (default 90)
-unless an admin approval pins them; deck events remain until deleted.
+`TRAINING_CAPTURE=true` additionally stores the sanitized Gemini deck-audit
+input and response provenance (for image passes: a content hash and context line,
+never pixels) so approved text/layout feedback can be reconstructed into future
+SFT/DPO pairs. Image-pixel training still requires explicit consent plus private
+object storage. These captures expire after `TRAINING_CAPTURE_TTL_DAYS` (default
+90) unless an admin approval pins them; deck events remain until deleted.
 `npm run retention` purges expired rows and `--purge-deck deck-v1-<hex>` deletes
 deck events, captures, and feedback for one client's deck.
 

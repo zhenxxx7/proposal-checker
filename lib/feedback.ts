@@ -23,8 +23,10 @@ export interface FeedbackRecord {
     fingerprint?: string;
   };
   finding: {
-    source: "ai-text" | "ai-image";
+    source: "ai-text" | "ai-image" | "ai-deck";
     code: Finding["code"];
+    /** Unified deck feedback retains which Gemini pass generated the finding. */
+    analysisTask?: "deck" | "image";
     slide: number;
     severity: Finding["severity"];
     category: Finding["category"];
@@ -77,10 +79,11 @@ type FingerprintFinding = Pick<
   | "suggestion"
   | "shapeIds"
   | "relatedSlides"
+  | "analysisTask"
 >;
 type LearningFinding = Pick<
   Finding,
-  "source" | "code" | "category" | "title" | "detail" | "quote" | "suggestion"
+  "source" | "code" | "category" | "title" | "detail" | "quote" | "suggestion" | "analysisTask"
 >;
 
 export interface FeedbackLearningResult {
@@ -112,9 +115,9 @@ export interface FeedbackPolicyResponse {
 }
 
 export function isAiFinding(finding: Finding): finding is Finding & {
-  source: "ai-text" | "ai-image";
+  source: "ai-text" | "ai-image" | "ai-deck";
 } {
-  return finding.source === "ai-text" || finding.source === "ai-image";
+  return finding.source === "ai-text" || finding.source === "ai-image" || finding.source === "ai-deck";
 }
 
 /**
@@ -126,6 +129,7 @@ export function findingFingerprint(finding: FingerprintFinding): string {
   const canonical = JSON.stringify({
     source: finding.source,
     code: finding.code,
+    analysisTask: finding.analysisTask ?? "",
     slide: finding.slide,
     severity: finding.severity,
     category: finding.category,
@@ -150,6 +154,7 @@ export function feedbackLearningKey(finding: LearningFinding): string {
   const canonical = JSON.stringify({
     source: finding.source,
     code: finding.code,
+    analysisTask: finding.analysisTask ?? "",
     category: finding.category,
     ...(quote
       ? {
@@ -191,8 +196,9 @@ export function createFeedbackRecord({
   reason,
   promptVersion,
   analysisInputId,
+  analysisTask,
 }: {
-  finding: Finding & { source: "ai-text" | "ai-image" };
+  finding: Finding & { source: "ai-text" | "ai-image" | "ai-deck" };
   rating: FeedbackRating;
   deckName: string;
   deckFingerprint: string;
@@ -203,6 +209,7 @@ export function createFeedbackRecord({
   reason?: string;
   promptVersion?: string;
   analysisInputId?: string;
+  analysisTask?: "deck" | "image";
 }): FeedbackRecord {
   const trimmedCorrection = correction?.trim().slice(0, 4000);
   const trimmedReason = reason?.trim().slice(0, 2000);
@@ -220,6 +227,7 @@ export function createFeedbackRecord({
     finding: {
       source: finding.source,
       code: finding.code,
+      ...(analysisTask ? { analysisTask } : {}),
       slide: finding.slide,
       severity: finding.severity,
       category: finding.category,
@@ -440,11 +448,13 @@ export function isFeedbackRecord(value: unknown): value is FeedbackRecord {
   if (deck.fingerprint !== undefined && !shortString(deck.fingerprint, 128)) return false;
 
   const finding = value.finding;
-  if (!isObject(finding) || (finding.source !== "ai-text" && finding.source !== "ai-image")) return false;
+  if (!isObject(finding) || (finding.source !== "ai-text" && finding.source !== "ai-image" && finding.source !== "ai-deck")) return false;
   if (
     (finding.source === "ai-text" && finding.code !== "ai.text") ||
-    (finding.source === "ai-image" && finding.code !== "ai.image")
+    (finding.source === "ai-image" && finding.code !== "ai.image") ||
+    (finding.source === "ai-deck" && finding.code !== "ai.deck")
   ) return false;
+  if (finding.analysisTask !== undefined && finding.analysisTask !== "deck" && finding.analysisTask !== "image") return false;
   if (!positiveInteger(finding.slide, Number(deck.slideCount))) return false;
   if (
     !shortString(finding.severity, 16) ||

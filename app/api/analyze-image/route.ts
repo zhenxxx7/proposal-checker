@@ -1,5 +1,5 @@
 import { askForFindings } from "@/lib/ai/client";
-import { IMAGE_SYSTEM_PROMPT, promptVersionFor } from "@/lib/ai/prompts";
+import { DECK_IMAGE_SYSTEM_PROMPT, promptVersionFor } from "@/lib/ai/prompts";
 import { resolveAiConfig } from "@/lib/ai/registry";
 import { captureAnalysisInput, sha256Hex } from "@/lib/analysisInputs";
 import { resolveSharedFeedbackPromptMemory } from "@/lib/feedbackServer";
@@ -40,11 +40,11 @@ export async function POST(req: Request) {
     .filter(Boolean)
     .join("\n\n");
   const fingerprint = deckFingerprint(requestedDeckFingerprint);
-  const feedbackMemory = await promptMemory("ai-image", fingerprint);
+  const feedbackMemory = await promptMemory(fingerprint);
 
   try {
     const result = await askForFindings(
-      `${IMAGE_SYSTEM_PROMPT}${feedbackMemory.prompt}`,
+      `${DECK_IMAGE_SYSTEM_PROMPT}${feedbackMemory.prompt}`,
       [
         { type: "image_url", image_url: { url: `data:${mediaType};base64,${image}` } },
         { type: "text", text: context },
@@ -59,8 +59,8 @@ export async function POST(req: Request) {
     const analysisInput = fingerprint
       ? await captureAnalysisInput({
           deckFingerprint: fingerprint,
-          source: "ai-image",
-          promptVersion: promptVersionFor("ai-image"),
+          source: "ai-deck",
+          promptVersion: promptVersionFor("ai-deck-image"),
           payload: {
             slide,
             imageSha256: sha256Hex(Buffer.from(image, "base64")),
@@ -79,7 +79,7 @@ export async function POST(req: Request) {
       findings,
       // Actual serving provenance — the browser stamps it into feedback records.
       model: { provider: result.provider, name: result.model },
-      promptVersion: promptVersionFor("ai-image"),
+      promptVersion: promptVersionFor("ai-deck-image"),
       analysisInput,
       feedbackMemory: feedbackMeta(feedbackMemory),
     });
@@ -89,9 +89,9 @@ export async function POST(req: Request) {
   }
 }
 
-async function promptMemory(source: "ai-text" | "ai-image", fingerprint?: string) {
+async function promptMemory(fingerprint?: string) {
   try {
-    return await resolveSharedFeedbackPromptMemory({ source, deckFingerprint: fingerprint });
+    return await resolveSharedFeedbackPromptMemory({ source: "ai-deck", deckFingerprint: fingerprint });
   } catch (error) {
     console.error("Shared feedback prompt lookup failed", error);
     return { configured: false, examples: [], prompt: "" };

@@ -21,7 +21,7 @@ export interface SharedFeedbackPolicyRow {
   rating: FeedbackRating;
 }
 
-export type SharedFeedbackSource = "ai-text" | "ai-image";
+export type SharedFeedbackSource = "ai-text" | "ai-image" | "ai-deck";
 
 /** Latest rating for one deck/pattern, plus compact finding data for Gemini. */
 export interface SharedFeedbackPromptRow extends SharedFeedbackPolicyRow {
@@ -162,7 +162,7 @@ export async function saveSharedFeedback(record: FeedbackRecord): Promise<void> 
   // value in the legacy columns, the server_* columns are authoritative. The
   // claimed prompt version is trusted only when it names archived content —
   // versions are content hashes, so an archived version cannot be forged.
-  const serverConfig = aiConfig(finding.source === "ai-image" ? "image" : "text");
+  const serverConfig = aiConfig(finding.analysisTask === "image" || finding.source === "ai-image" ? "image" : "text");
   const promptVersion =
     record.promptVersion && isArchivedPromptVersion(record.promptVersion)
       ? record.promptVersion

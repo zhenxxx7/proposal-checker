@@ -37,7 +37,11 @@ const CASE: EvalCase = {
 // --- strict JSON validation -------------------------------------------------
 const strictBody = JSON.stringify({ findings: [finding({})] });
 assert.ok(strictValidateFindings(strictBody), "schema-exact raw JSON passes strict validation");
-assert.ok(strictValidateFindings('{"findings":[]}'), "an empty findings array is strictly valid");
+assert.ok(strictValidateFindings('{' + '"findings":[]' + '}'), "an empty findings array is strictly valid");
+assert.ok(
+  strictValidateFindings(JSON.stringify({ findings: [finding({ category: "alignment", quote: "", shapeIds: ["shape-1"] })] })),
+  "grounded deck-layout fields are strictly valid",
+);
 assert.ok(!strictValidateFindings("```json\n" + strictBody + "\n```"), "fenced output is rejected, never repaired");
 assert.ok(!strictValidateFindings('{"findings":[{"slide":1}]}'), "missing fields are rejected");
 assert.ok(
